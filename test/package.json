@@ -1,0 +1,18 @@
+{
+  "name": "aws-drq-consumer-tests",
+  "version": "1.0.0-beta.1",
+  "author": "Byron du Preez",
+  "main": "drq-consumer.test.js",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=4.3.2"
+  },
+  "scripts": {
+    "test": "tape ./*.test.js"
+  },
+  "devDependencies": {
+    "node-uuid": "^1.4.7",
+    "tape": "^4.6.2"
+  },
+  "repository": "https://github.com/byron-dupreez/aws-drq-consumer"
+}
