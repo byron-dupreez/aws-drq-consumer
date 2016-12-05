@@ -12,24 +12,19 @@
     "injectInCase": "upper"
   },
 
-  "kinesisOptions": {
-    "maxRetries": 1
-  },
-
-  "dynamoDBDocClientOptions": {
-    "maxRetries": 1
-  },
-
   "streamProcessingOptions": {
     "streamType": "kinesis",
     "taskTrackingName": "drqTaskTracking",
     "timeoutAtPercentageOfRemainingTime": 0.9,
     "maxNumberOfAttempts": 10,
     "deadRecordQueueName": "DeadRecordQueue",
-    "deadMessageQueueName": "DeadMessageQueue"
-  },
-
-  "drqConsumerOptions": {
+    "deadMessageQueueName": "DeadMessageQueue",
+    "kinesisOptions": {
+      "maxRetries": 1
+    },
+    "dynamoDBDocClientOptions": {
+      "maxRetries": 1
+    },
     "deadRecordTableName": "DeadRecord"
   }
 

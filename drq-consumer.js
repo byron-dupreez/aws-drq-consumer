@@ -2,6 +2,8 @@
 
 const regions = require('aws-core-utils/regions');
 
+const Objects = require('core-functions/objects');
+
 const Strings = require('core-functions/strings');
 const stringify = Strings.stringify;
 const trimOrEmpty = Strings.trimOrEmpty;
@@ -11,13 +13,11 @@ const TaskDef = taskDefs.TaskDef;
 
 const logging = require('logging-utils');
 const stages = require('aws-core-utils/stages');
-const kinesisUtils = require('aws-core-utils/kinesis-utils');
-const dynamoDbDocClients = require('aws-core-utils/dynamodb-doc-clients');
+const dynamoDBUtils = require('aws-core-utils/dynamodb-utils');
 const streamEvents = require('aws-core-utils/stream-events');
 const arns = require('aws-core-utils/arns');
 
 const streamProcessing = require('aws-stream-consumer/stream-processing');
-const streamConsumerConfig = require('aws-stream-consumer/stream-consumer-config');
 const streamConsumer = require('aws-stream-consumer/stream-consumer');
 
 /**
@@ -27,47 +27,202 @@ const streamConsumer = require('aws-stream-consumer/stream-consumer');
  * @module aws-drq-consumer/drq-consumer
  * @author Byron du Preez
  */
-exports.handler = function (event, awsContext, callback) {
+module.exports = {
+  // Export this module's functions for customisation and testing purposes
+  // Configuration functions
+  configureDeadRecordQueueConsumer: configureDeadRecordQueueConsumer,
+  configureDeadRecordQueueProcessing: configureDeadRecordQueueProcessing,
+  configureDefaultDeadRecordQueueProcessing: configureDefaultDeadRecordQueueProcessing,
+  getDefaultDeadRecordQueueProcessingSettings: getDefaultDeadRecordQueueProcessingSettings,
+  // Processing functions
+  consumeDeadRecords: consumeDeadRecords,
+  saveDeadRecord: saveDeadRecord,
+  toDeadRecord: toDeadRecord,
+  toDeadRecordFromKinesisRecord: toDeadRecordFromKinesisRecord,
+  toDeadRecordFromDynamoDBStreamRecord: toDeadRecordFromDynamoDBStreamRecord,
+  toDeadRecordFromS3Record: toDeadRecordFromS3Record,
+  toDeadRecordFromSESRecord: toDeadRecordFromSESRecord,
+  toDeadRecordFromSNSRecord: toDeadRecordFromSNSRecord,
+};
+
+module.exports.handler = function (event, awsContext, callback) {
   const context = {};
 
   try {
-    const settings = undefined;
-    const options = require('./config.json');
-
-    // Configure the dead record queue processing
-    configureDeadRecordQueueProcessing(context, settings, options);
-
-    // Configure the dead record queue consumer's runtime-settings
-    configureDeadRecordQueueConsumer(context, settings, options, event, awsContext);
+    // Configure the dead record queue consumer
+    configureDeadRecordQueueConsumer(context, undefined, require('./drq-options.json'), event, awsContext);
 
     // Consume the dead records
     consumeDeadRecords(event, context)
-      .then(results => {
-        context.debug(results);
-        callback(null, results);
+      .then(() => { // results => {
+        //context.info(`DRQ stream consumer results: ${JSON.stringify(results)}`);
+        callback(null);
       })
       .catch(err => {
-        context.error(err);
+        context.error(err.message, err.stack);
+        // streamConsumer.awaitStreamConsumerResults(err.streamConsumerResults).then(results =>
+        //   context.error(`DRQ stream consumer partial results: ${results ? JSON.stringify(results) : 'None available'}`)
+        // );
         callback(err);
       });
 
   } catch (err) {
-    (context.error ? context.error : console.error)(`DRQ consumer failed to consume dead records for event (${event})`, err.stack);
+    (context.error ? context.error : console.error)(`DRQ consumer failed to consume dead records for event (${stringify(event)})`, err.stack);
     callback(err);
   }
 };
 
-// Export this module's functions for customisation and testing purposes
-exports.configureDeadRecordQueueProcessing = configureDeadRecordQueueProcessing;
-exports.configureDeadRecordQueueConsumer = configureDeadRecordQueueConsumer;
-exports.consumeDeadRecords = consumeDeadRecords;
-exports.saveDeadRecord = saveDeadRecord;
-exports.toDeadRecord = toDeadRecord;
-exports.toDeadRecordFromKinesisRecord = toDeadRecordFromKinesisRecord;
-exports.toDeadRecordFromDynamoDBStreamRecord = toDeadRecordFromDynamoDBStreamRecord;
-exports.toDeadRecordFromS3Record = toDeadRecordFromS3Record;
-exports.toDeadRecordFromSESRecord = toDeadRecordFromSESRecord;
-exports.toDeadRecordFromSNSRecord = toDeadRecordFromSNSRecord;
+// =====================================================================================================================
+// Configure dead record processing and consumer
+// =====================================================================================================================
+
+/**
+ * @typedef {StreamProcessingOptions} DRQProcessingSettings - DRQ stream processing settings to use
+ * @property {string|undefined} [deadRecordTableName] - optional DynamoDB dead record table name (defaults to 'DeadRecord' if undefined)
+ */
+
+/**
+ * @typedef {StreamProcessingOptions} DRQProcessingOptions - DRQ stream processing options to use if no corresponding settings are provided
+ * @property {string|undefined} [deadRecordTableName] - optional DynamoDB dead record table name (defaults to 'DeadRecord' if undefined)
+ */
+
+/**
+ * @typedef {StreamConsumerSettings} DRQSettings - DRQ configuration settings to use
+ * @property {DRQProcessingSettings|undefined} [streamProcessingSettings] - optional stream processing settings to use to configure stream processing
+ */
+
+/**
+ * @typedef {StreamConsumerOptions} DRQOptions - DRQ configuration options to use if no corresponding settings are provided
+ * @property {DRQProcessingOptions|undefined} [streamProcessingOptions] - optional stream processing options to use to configure stream processing
+ */
+
+/**
+ * Configures the settings and dependencies of a Dead Record Queue consumer.
+ * @param {Object} context - the context
+ * @param {DRQSettings|undefined} [settings] - optional configuration settings to use
+ * @param {DRQOptions|undefined} [options] - configuration options to use if no corresponding settings are provided
+ * @param {Object} event - an AWS event
+ * @param {Object} awsContext - the AWS context
+ */
+function configureDeadRecordQueueConsumer(context, settings, options, event, awsContext) {
+  // Configure DRQ stream processing (plus logging, stage handling & kinesis) if not configured yet
+  configureDeadRecordQueueProcessing(context, settings ? settings.streamProcessingSettings : undefined,
+    options ? options.streamProcessingOptions : undefined, settings, options, false);
+
+  // Configure the DRQ stream consumer
+  streamConsumer.configureStreamConsumer(context, settings, options, event, awsContext);
+}
+
+/**
+ * Configures the given context with the given DRQ stream processing settings (if any) otherwise with the default DRQ
+ * stream processing settings partially overridden by the given DRQ stream processing options (if any), but only if
+ * stream processing is not already configured on the given context OR if forceConfiguration is true.
+ *
+ * @param {Object} context - the context to configure
+ * @param {DRQProcessingSettings|undefined} [settings] - optional stream processing settings to use to configure stream processing
+ * @param {DRQProcessingOptions|undefined} [options] - optional stream processing options to use to override default options
+ * @param {OtherSettings|undefined} [otherSettings] - optional other settings to use to configure dependencies
+ * @param {OtherOptions|undefined} [otherOptions] - optional other options to use to configure dependencies if corresponding settings are not provided
+ * @param {boolean|undefined} [forceConfiguration] - whether or not to force configuration of the given settings, which
+ * will override any previously configured DRQ stream processing settings on the given context
+ * @returns {Object} the given context
+ */
+function configureDeadRecordQueueProcessing(context, settings, options, otherSettings, otherOptions, forceConfiguration) {
+  const settingsAvailable = settings && typeof settings === 'object';
+  const optionsAvailable = options && typeof options === 'object';
+
+  // Check if stream processing was already configured
+  const streamProcessingWasConfigured = streamProcessing.isStreamProcessingConfigured(context);
+
+  // Determine the stream processing settings to be used
+  const defaultSettings = getDefaultDeadRecordQueueProcessingSettings(options);
+
+  const streamProcessingSettings = settingsAvailable ?
+    Objects.merge(defaultSettings, settings, false, false) : defaultSettings;
+
+  // Configure stream processing with the given or derived stream processing settings
+  streamProcessing.configureStreamProcessingWithSettings(context, streamProcessingSettings, otherSettings, otherOptions, forceConfiguration);
+
+  // Log a warning if no settings and no options were provided and the default settings were applied
+  if (!settingsAvailable && !optionsAvailable && (forceConfiguration || !streamProcessingWasConfigured)) {
+    context.warn(`DRQ stream processing was configured without settings or options - used default DRQ stream processing configuration (${stringify(streamProcessingSettings)})`);
+  }
+  return context;
+}
+
+/**
+ * Configures the given context with the default DRQ stream processing settings, but only if stream processing is not
+ * already configured on the given context OR if forceConfiguration is true.
+ *
+ * @param {Object} context - the context to configure
+ * @param {boolean|undefined} [forceConfiguration] - whether or not to force configuration of the given settings, which
+ * will override any previously configured DRQ stream processing settings on the given context
+ * @returns {Object} the given context
+ */
+function configureDefaultDeadRecordQueueProcessing(context, forceConfiguration) {
+  const drqOptions = require('./drq-options.json');
+  const drqProcessingOptions = drqOptions ? drqOptions.streamProcessingOptions : {};
+  return configureDeadRecordQueueProcessing(context, undefined, drqProcessingOptions, undefined, drqOptions, forceConfiguration);
+}
+
+/**
+ * Returns the default DRQ stream processing settings partially overridden by the given stream processing options (if any).
+ *
+ * This function is used internally by {@linkcode configureDefaultDeadRecordProcessing}, but could also be used in
+ * custom configurations to get the default settings as a base to be overridden with your custom settings before calling
+ * {@linkcode configureDeadRecordQueueProcessing}.
+ *
+ * @param {DRQProcessingOptions} [options] - optional DRQ stream processing options to use to override the default options
+ * @returns {DRQProcessingSettings} a DRQ stream processing settings object (including both property and function settings)
+ */
+function getDefaultDeadRecordQueueProcessingSettings(options) {
+  const overrideOptions = options && typeof options === 'object' ? Objects.copy(options, true) : {};
+
+  // Load defaults from local drq-options.json file
+  const defaultOptions = loadDefaultDeadRecordQueueProcessingOptions();
+  Objects.merge(defaultOptions, overrideOptions, false, false);
+
+  // Start with the default Kinesis stream processing settings
+  const defaultSettings = streamProcessing.getDefaultKinesisStreamProcessingSettings(overrideOptions);
+
+  // Customise the discardUnusableRecords function to eliminate any unusable ("deader"), dead records during DRQ stream processing
+  defaultSettings.discardUnusableRecords = eliminateUnusableRecords;
+
+  return defaultSettings;
+}
+
+/**
+ * Loads the default DRQ stream processing options from the local drq-options.json file and fills in any missing
+ * options with the static default options.
+ * @returns {DRQProcessingOptions} the default stream processing options
+ */
+function loadDefaultDeadRecordQueueProcessingOptions() {
+  const options = require('./drq-options.json');
+  const defaultOptions = options && options.streamProcessingOptions && typeof options.streamProcessingOptions === 'object' ?
+    options.streamProcessingOptions : {};
+
+  const defaults = {
+    // Generic settings
+    streamType: streamProcessing.KINESIS_STREAM_TYPE,
+    taskTrackingName: 'drqTaskTracking',
+    timeoutAtPercentageOfRemainingTime: 0.9,
+    maxNumberOfAttempts: 10,
+    // Specialised settings needed by implementations using external task tracking
+    // taskTrackingTableName: undefined,
+    // Specialised settings needed by default implementations - e.g. DRQ and DMQ stream names
+    // deadRecordQueueName: undefined,
+    deadMessageQueueName: 'DeadMessageQueue',
+    // Kinesis & DynamoDB.DocumentClient options
+    kinesisOptions: {},
+    dynamoDBDocClientOptions: {},
+    deadRecordTableName: 'DeadRecord'
+  };
+  return Objects.merge(defaults, defaultOptions, false, false);
+}
+
+// =====================================================================================================================
+// Consume dead records
+// =====================================================================================================================
 
 /**
  * @typedef {Object} DeadRecord - represents a common structure for storing an unusable record as a dead record
@@ -78,23 +233,11 @@ exports.toDeadRecordFromSNSRecord = toDeadRecordFromSNSRecord;
  */
 
 /**
- * @typedef {Object} DrqOptions - DRQ configuration options to use if no corresponding settings are provided
- * @property {LoggingOptions|undefined} [loggingOptions] - optional logging options to use to configure logging
- * @property {StageHandlingOptions|undefined} [stageHandlingOptions] - optional stage handling options to use to configure stage handling
- * @property {StreamProcessingOptions|undefined} [streamProcessingOptions] - optional stream processing options to use to configure stream processing
- * @property {Object|undefined} [kinesisOptions] - optional Kinesis constructor options to use to configure an AWS.Kinesis instance
- * @property {Object|undefined} [dynamoDBDocClientOptions] - optional DynamoDB.DocumentClient constructor options to use to configure an AWS.DynamoDB.DocumentClient instance
- * @property {Object|undefined} [drqConsumerOptions] - optional DRQ consumer specific options
- * @property {string|undefined} [drqConsumerOptions.deadRecordTableName] - optional DynamoDB dead record table name (defaults to 'DeadRecord' if undefined)
-
- */
-
-/**
  * Consumes all of the unusable/dead records in the given event by transforming them into dead records and writing them
  * to a DynamoDB dead record table.
  * @param {Object} event - an AWS event
  * @param {Object} context - the context
- * @returns {Promise.<StreamProcessingResults|StreamProcessingError>} a resolved promise with the full stream processing
+ * @returns {Promise.<StreamConsumerResults|StreamConsumerError>} a resolved promise with the full stream processing
  * results or a rejected promise with an error with partial stream processing results
  */
 function consumeDeadRecords(event, context) {
@@ -106,105 +249,23 @@ function consumeDeadRecords(event, context) {
 }
 
 /**
- * Returns true if a dead record queue consumer's processing settings have been configured on the given context;
- * otherwise returns false.
- * @param {Object} context - the context to check
- * @returns {boolean} true if configured; false otherwise
- */
-function isDeadRecordQueueProcessingConfigured(context) {
-  return !!context && logging.isLoggingConfigured(context) && stages.isStageHandlingConfigured(context) &&
-    streamProcessing.isStreamProcessingConfigured(context) && context.kinesis && context.dynamoDBDocClient;
-}
-
-/**
- * Configures the settings of the Dead Record Queue consumer.
- * @param {Object} context - the context
- * @param {Settings|undefined} [settings] - optional configuration settings to use
- * @param {DrqOptions|undefined} [options] - configuration options to use if no corresponding settings are provided
- */
-function configureDeadRecordQueueProcessing(context, settings, options) {
-  const forceConfiguration = false;
-
-  // Configure logging
-  const loggingSettings = settings && settings.loggingSettings ? settings.loggingSettings :
-    logging.getDefaultLoggingSettings(options ? options.loggingOptions : undefined);
-
-  logging.configureLogging(context, loggingSettings, forceConfiguration);
-
-  // Configure stage-handling
-  const stageHandlingSettings = settings && settings.stageHandlingSettings ? settings.stageHandlingSettings :
-    stages.getDefaultStageHandlingSettings(options ? options.stageHandlingOptions : undefined);
-
-  stages.configureStageHandling(context, stageHandlingSettings, settings, options, forceConfiguration);
-
-  // Configure a Kinesis instance
-  kinesisUtils.configureKinesis(context, options ? options.kinesisOptions : undefined);
-
-  // Configure a DynamoDB document client instance
-  dynamoDbDocClients.configureDynamoDBDocClient(context, options ? options.dynamoDBDocClientOptions : undefined);
-
-  // Configure custom stream processing
-  if (settings && typeof settings === 'object' && settings.streamProcessingSettings && typeof settings.streamProcessingSettings === 'object') {
-    // Configure custom stream processing
-    streamProcessing.configureStreamProcessing(context, settings.streamProcessingSettings, settings, options, forceConfiguration);
-  } else {
-    // Get the default Kinesis stream processing settings
-    const streamProcessingSettings = streamProcessing.getDefaultKinesisStreamProcessingSettings(options ? options.streamProcessingOptions : undefined);
-    // Customize the default Kinesis stream processing functions
-    // streamProcessingSettings.extractMessageFromRecord = streamProcessing.DEFAULTS.extractJsonMessageFromKinesisRecord;
-    streamProcessingSettings.discardUnusableRecords = eliminateUnusableRecords;
-    // streamProcessingSettings.resubmitIncompleteMessages = streamProcessing.DEFAULTS.resubmitIncompleteMessagesToKinesis();
-    // streamProcessingSettings.discardRejectedMessages = streamProcessing.DEFAULTS.discardRejectedMessagesToDMQ;
-
-    // Configure custom stream processing
-    streamProcessing.configureStreamProcessing(context, streamProcessingSettings, settings, options, forceConfiguration);
-  }
-}
-
-/**
- * Configures the settings of the Dead Record Queue consumer.
- * @param {Object} context - the context
- * @param {Settings|undefined} [settings] - optional configuration settings to use
- * @param {DrqOptions|undefined} [options] - configuration options to use if no corresponding settings are provided
- * @param {Object} event - an AWS event
- * @param {Object} awsContext - the AWS context
- */
-function configureDeadRecordQueueConsumer(context, settings, options, event, awsContext) {
-  // Ensure that the DRQ processing settings are configured too
-  if (!isDeadRecordQueueProcessingConfigured(context)) {
-    configureDeadRecordQueueProcessing(context, settings, options);
-  }
-
-  // Configure the stream consumer's runtime settings
-  streamConsumerConfig.configureStreamConsumer(context, settings, options, event, awsContext);
-
-  // Set up the DRQ consumer specific settings on the context
-  if (!context.drqConsumer) {
-    context.drqConsumer = {};
-  }
-  // Get the dead record table name
-  if (!context.drqConsumer.deadRecordTableName) {
-    context.drqConsumer.deadRecordTableName = options.drqConsumerOptions && options.drqConsumerOptions.deadRecordTableName ?
-      options.drqConsumerOptions.deadRecordTableName : 'DeadRecord';
-  }
-}
-
-/**
  * Transforms the given unusable record into a dead record (DeadRecord) and saves it to the DynamoDB dead record table.
  * @param {Object} record - an AWS event record to save
  * @param {Object} context - the context
+ * @param {Object} context.streamProcessing - the stream processing configuration on the context
+ * @param {string} context.streamProcessing.deadRecordTableName - the name of the dead record table to which to save
  * @returns {*} the DynamoDB put result
  */
 function saveDeadRecord(record, context) {
   const task = this;
   context.trace(`DRQ consumer is saving dead record (${stringify(record)})`);
 
-  const dynamoDbDocClient = context.dynamoDBDocClient;
-  const tableName = stages.toStageQualifiedStreamName(context.drqConsumer.deadRecordTableName, context.stage, context);
+  const dynamoDBDocClient = context.dynamoDBDocClient;
+  const tableName = stages.toStageQualifiedStreamName(context.streamProcessing.deadRecordTableName, context.stage, context);
 
   const deadRecord = toDeadRecord(record);
   if (!deadRecord) {
-    const reason = `DRQ consumer failed to transform and save a dead record for unexpected type of record (${record})`;
+    const reason = `DRQ consumer failed to transform and save a dead record for unexpected type of record (${stringify(record)})`;
     context.error(reason);
     task.reject(reason, undefined, true);
     return Promise.resolve(undefined);
@@ -215,10 +276,10 @@ function saveDeadRecord(record, context) {
     Item: deadRecord
   };
 
-  return dynamoDbDocClient.put(request).promise()
+  return dynamoDBDocClient.put(request).promise()
     .then(result => {
       context.trace(`DRQ consumer saved dead record (${deadRecord.regionEventSourceAndName}, ${deadRecord.keys}) to ${tableName}`);
-      task.succeed(result);
+      task.succeed(result, true);
       return result;
     })
     .catch(err => {
@@ -262,7 +323,7 @@ function toDeadRecord(record) {
  * @returns {DeadRecord} a dead record
  */
 function toDeadRecordFromKinesisRecord(record) {
-  const streamName = streamEvents.getEventSourceStreamName(record);
+  const streamName = streamEvents.getKinesisEventSourceStreamName(record);
   const regionEventSourceAndName = `${record.awsRegion}|kinesis|${streamName}`;
   const keys = `${record.kinesis.partitionKey}|${trimOrEmpty(record.kinesis.explicitHashKey)}|${record.eventID}`;
 
@@ -279,16 +340,13 @@ function toDeadRecordFromKinesisRecord(record) {
  * @returns {DeadRecord} a dead record
  */
 function toDeadRecordFromDynamoDBStreamRecord(record) {
-  const tableName = arns.getArnResources(record.eventSourceARN).resource;
+  const tableNameAndStreamTimestamp = streamEvents.getDynamoDBEventSourceTableNameAndStreamTimestamp(record);
+  const tableName = tableNameAndStreamTimestamp[0];
+  const streamTimestamp = tableNameAndStreamTimestamp[0];
   const regionEventSourceAndName = `${record.awsRegion}|dynamodb|${tableName}`;
   // Combine all of the record's Keys into a single string
-  const Keys = record.dynamodb.Keys;
-  const keysAndValues = Object.getOwnPropertyNames(Keys).map(k =>
-    Object.getOwnPropertyNames(Keys[k]).map(t =>
-      `${k}:${Keys[k][t]}`
-    )
-  );
-  const keys = `[${keysAndValues.join('][')}]|${record.dynamodb.SequenceNumber}|${record.eventID}`;
+  const keysAndValues = dynamoDBUtils.toKeyValueStrings(record.dynamodb.Keys);
+  const keys = `[${keysAndValues.join('][')}]|${record.dynamodb.SequenceNumber}|${streamTimestamp}|${record.eventID}`;
 
   return {
     regionEventSourceAndName: regionEventSourceAndName,

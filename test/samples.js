@@ -39,8 +39,8 @@ module.exports = {
 
   // For Kinesis events
   sampleStreamName: sampleStreamName,
-  sampleEventSourceArn: sampleEventSourceArn,
-  sampleEventSourceArnFromPrefixSuffix: sampleEventSourceArnFromPrefixSuffix,
+  sampleKinesisEventSourceArn: sampleEventSourceArn,
+  sampleKinesisEventSourceArnFromPrefixSuffix: sampleEventSourceArnFromPrefixSuffix,
   sampleBase64Data: sampleBase64Data,
   sampleKinesisRecord: sampleKinesisRecord,
   sampleKinesisEventWithSampleRecord: sampleKinesisEventWithSampleRecord,

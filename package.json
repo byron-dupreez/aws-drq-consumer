@@ -1,6 +1,6 @@
 {
   "name": "aws-drq-consumer",
-  "version": "1.0.0-beta.1",
+  "version": "1.0.0-beta.2",
   "description": "An AWS Lambda that will consume unusable records from a Dead Record Queue (DRQ) Kinesis stream and save them to DynamoDB",
   "author": "Byron du Preez",
   "license": "Apache-2.0",
@@ -12,11 +12,11 @@
     "test": "tape ./test/*.test.js"
   },
   "dependencies": {
-    "aws-core-utils": "^3.0.2",
-    "aws-stream-consumer": "^1.0.0-beta.6",
-    "core-functions": "^2.0.3",
-    "logging-utils": "^2.0.3",
-    "task-utils": "^3.0.1"
+    "aws-core-utils": "^5.0.5",
+    "aws-stream-consumer": "^1.0.0-beta.11",
+    "core-functions": "^2.0.10",
+    "logging-utils": "^3.0.5",
+    "task-utils": "^4.0.3"
   },
   "devDependencies": {
     "aws-sdk": "2.4.9"

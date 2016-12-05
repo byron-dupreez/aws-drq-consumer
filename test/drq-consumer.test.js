@@ -38,7 +38,7 @@ const taskUtils = require('task-utils/task-utils');
 const regions = require("aws-core-utils/regions");
 const stages = require("aws-core-utils/stages");
 //const streamEvents = require("aws-core-utils/stream-events");
-// const kinesisUtils = require("aws-core-utils/kinesis-utils");
+// const kinesisCache = require("aws-core-utils/kinesis-cache");
 
 require("core-functions/promises");
 
@@ -68,7 +68,7 @@ function setupRegion(region) {
 
 function sampleKinesisEvent(streamName, partitionKey, data, omitEventSourceARN) {
   const region = process.env.AWS_REGION;
-  const eventSourceArn = omitEventSourceARN ? undefined : samples.sampleEventSourceArn(region, streamName);
+  const eventSourceArn = omitEventSourceARN ? undefined : samples.sampleKinesisEventSourceArn(region, streamName);
   return samples.sampleKinesisEventWithSampleRecord(partitionKey, data, eventSourceArn, region);
 }
 
@@ -88,16 +88,13 @@ function sampleAwsContext(functionVersion, functionAlias, maxTimeInMillis) {
   return samples.sampleAwsContext(functionName, functionVersion, invokedFunctionArn, maxTimeInMillis);
 }
 
-function configureDefaults(t, context, kinesisError, dynamoDBError, dynamoDBDelayMs) {
+function configureKinesisAndDynamoDB(t, context, kinesisError, dynamoDBError, dynamoDBDelayMs) {
   context.kinesis = dummyKinesis(t, 'DRQ consumer', kinesisError);
   context.dynamoDBDocClient = dummyDynamoDBDocClient(t, 'DRQ consumer', dynamoDBError, dynamoDBDelayMs);
-  const options = require('../config.json');
-  drqConsumer.configureDeadRecordQueueProcessing(context, undefined, options);
 }
 
 function configureDRQConsumer(context, event, awsContext) {
-  const options = require('../config.json');
-  drqConsumer.configureDeadRecordQueueConsumer(context, undefined, options, event, awsContext);
+  drqConsumer.configureDeadRecordQueueConsumer(context, undefined, require('../drq-options.json'), event, awsContext);
 }
 
 function dummyKinesis(t, prefix, error) {
@@ -147,7 +144,7 @@ function sampleUnusableRecord(i) {
   // Create plain string data, which cannot be extracted into an object
   const badData = base64.toBase64FromUtf8(`BadData (${i}) (${messageNumber})`);
   const origStreamName = 'TestStream_DEV2';
-  const eventSourceArn = samples.sampleEventSourceArn(region, origStreamName);
+  const eventSourceArn = samples.sampleKinesisEventSourceArn(region, origStreamName);
   return samples.sampleKinesisRecord(undefined, badData, eventSourceArn, region);
 }
 
@@ -194,13 +191,11 @@ test('consumeDeadRecords with 1 message that succeeds all tasks', t => {
   const maxTimeInMillis = 1000;
   const awsContext = sampleAwsContext('1.0.1', 'dev1', maxTimeInMillis);
 
-  // Simulate ideal conditions - everything meant to be configured beforehand has been configured
-  configureDefaults(t, context, undefined, undefined);
+  configureKinesisAndDynamoDB(t, context, undefined, undefined);
 
   // Process the event
   try {
     configureDRQConsumer(context, event, awsContext);
-    console.log(`############# context = ${stringify(context)}`);
     const promise = drqConsumer.consumeDeadRecords(event, context);
 
     if (Promise.isPromise(promise)) {
@@ -212,24 +207,24 @@ test('consumeDeadRecords with 1 message that succeeds all tasks', t => {
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    equal(t, context.streamConsumer.resubmitStreamName, streamName, 'context.streamConsumer.resubmitStreamName');
-    equal(t, context.drqConsumer.deadRecordTableName, 'DeadRecord', 'context.drqConsumer.deadRecordTableName');
+    t.ok(context.streamConsumer, 'context.streamConsumer');
+    equal(t, context.streamProcessing.deadRecordTableName, 'DeadRecord', 'context.streamProcessing.deadRecordTableName');
 
     promise
       .then(results => {
         t.pass(`consumeDeadRecords must resolve`);
         const messages = results.messages;
         t.equal(messages.length, n, `consumeDeadRecords results must have ${n} messages`);
-        checkMessagesTasksStates(t, messages, taskStates.Success, taskStates.Success, context);
+        checkMessagesTasksStates(t, messages, taskStates.CompletedState, taskStates.CompletedState, context);
         t.equal(messages[0].drqTaskTracking.ones.saveDeadRecord.attempts, 1, `saveDeadRecord attempts must be 1`);
 
-        t.ok(results.processingCompleted, `consumeDeadRecords processing must be completed`);
-        t.notOk(results.processingFailed, `consumeDeadRecords processing must not be failed`);
-        t.notOk(results.processingTimedOut, `consumeDeadRecords processing must not be timed-out`);
+        t.ok(results.processing.completed, `consumeDeadRecords processing must be completed`);
+        t.notOk(results.processing.failed, `consumeDeadRecords processing must not be failed`);
+        t.notOk(results.processing.timedOut, `consumeDeadRecords processing must not be timed-out`);
 
         t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
         t.equal(results.discardedUnusableRecords.length, 0, `consumeDeadRecords results must have ${0} discarded unusable records`);
-        t.equal(results.resubmittedIncompleteMessages.length, 0, `consumeDeadRecords results must have ${0} resubmitted incomplete records`);
+        t.equal(results.handledIncompleteMessages.length, 0, `consumeDeadRecords results must have ${0} handled incomplete records`);
         t.equal(results.discardedRejectedMessages.length, 0, `consumeDeadRecords results must have ${0} discarded rejected messages`);
 
         t.end();
@@ -263,7 +258,7 @@ test('consumeDeadRecords with 1 message that succeeds all tasks (despite broken 
   const awsContext = sampleAwsContext('1.0.1', 'dev1', maxTimeInMillis);
 
   // Simulate ideal conditions - everything meant to be configured beforehand has been configured
-  configureDefaults(t, context, new Error('Disabling Kinesis'), undefined);
+  configureKinesisAndDynamoDB(t, context, new Error('Disabling Kinesis'), undefined);
 
   // Process the event
   try {
@@ -279,23 +274,23 @@ test('consumeDeadRecords with 1 message that succeeds all tasks (despite broken 
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    equal(t, context.streamConsumer.resubmitStreamName, streamName, 'context.streamConsumer.resubmitStreamName');
+    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(results => {
         t.pass(`consumeDeadRecords must resolve`);
         const messages = results.messages;
         t.equal(messages.length, n, `consumeDeadRecords results must have ${n} messages`);
-        checkMessagesTasksStates(t, messages, taskStates.Success, taskStates.Success, context);
+        checkMessagesTasksStates(t, messages, taskStates.CompletedState, taskStates.CompletedState, context);
         t.equal(messages[0].drqTaskTracking.ones.saveDeadRecord.attempts, 1, `saveDeadRecord attempts must be 1`);
 
-        t.ok(results.processingCompleted, `consumeDeadRecords processing must be completed`);
-        t.notOk(results.processingFailed, `consumeDeadRecords processing must not be failed`);
-        t.notOk(results.processingTimedOut, `consumeDeadRecords processing must not be timed-out`);
+        t.ok(results.processing.completed, `consumeDeadRecords processing must be completed`);
+        t.notOk(results.processing.failed, `consumeDeadRecords processing must not be failed`);
+        t.notOk(results.processing.timedOut, `consumeDeadRecords processing must not be timed-out`);
 
         t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
         t.equal(results.discardedUnusableRecords.length, 0, `consumeDeadRecords results must have ${0} discarded unusable records`);
-        t.equal(results.resubmittedIncompleteMessages.length, 0, `consumeDeadRecords results must have ${0} resubmitted incomplete records`);
+        t.equal(results.handledIncompleteMessages.length, 0, `consumeDeadRecords results must have ${0} handled incomplete records`);
         t.equal(results.discardedRejectedMessages.length, 0, `consumeDeadRecords results must have ${0} discarded rejected messages`);
 
         t.end();
@@ -319,7 +314,7 @@ test('consumeDeadRecords with 10 messages that succeed all tasks (despite broken
   const streamName = 'DeadRecordQueue_DEV2';
   const records = [];
   for (let i = 0; i < n; ++i) {
-    const eventSourceArn = samples.sampleEventSourceArn(region, streamName);
+    const eventSourceArn = samples.sampleKinesisEventSourceArn(region, streamName);
     const record = samples.sampleKinesisRecord(undefined, sampleUnusableRecord(i + 1), eventSourceArn, region);
     records.push(record);
   }
@@ -331,7 +326,7 @@ test('consumeDeadRecords with 10 messages that succeed all tasks (despite broken
 
   // Simulate ideal conditions - everything meant to be configured beforehand has been configured
   //configureDefaults(t, context, undefined);
-  configureDefaults(t, context, new Error('Disabling Kinesis'), undefined);
+  configureKinesisAndDynamoDB(t, context, new Error('Disabling Kinesis'), undefined);
 
   // Process the event
   try {
@@ -347,24 +342,24 @@ test('consumeDeadRecords with 10 messages that succeed all tasks (despite broken
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    equal(t, context.streamConsumer.resubmitStreamName, streamName, 'context.streamConsumer.resubmitStreamName');
+    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(results => {
         t.pass(`consumeDeadRecords must resolve`);
         const messages = results.messages;
         t.equal(messages.length, n, `consumeDeadRecords results must have ${n} messages`);
-        checkMessagesTasksStates(t, messages, taskStates.Success, taskStates.Success, context);
+        checkMessagesTasksStates(t, messages, taskStates.CompletedState, taskStates.CompletedState, context);
         for (let i = 0; i < messages.length; ++i) {
           t.equal(messages[i].drqTaskTracking.ones.saveDeadRecord.attempts, 1, `saveDeadRecord attempts must be 1`);
         }
-        t.ok(results.processingCompleted, `consumeDeadRecords processing must be completed`);
-        t.notOk(results.processingFailed, `consumeDeadRecords processing must not be failed`);
-        t.notOk(results.processingTimedOut, `consumeDeadRecords processing must not be timed-out`);
+        t.ok(results.processing.completed, `consumeDeadRecords processing must be completed`);
+        t.notOk(results.processing.failed, `consumeDeadRecords processing must not be failed`);
+        t.notOk(results.processing.timedOut, `consumeDeadRecords processing must not be timed-out`);
 
         t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
         t.equal(results.discardedUnusableRecords.length, 0, `consumeDeadRecords results must have ${0} discarded unusable records`);
-        t.equal(results.resubmittedIncompleteMessages.length, 0, `consumeDeadRecords results must have ${0} resubmitted incomplete records`);
+        t.equal(results.handledIncompleteMessages.length, 0, `consumeDeadRecords results must have ${0} handled incomplete records`);
         t.equal(results.discardedRejectedMessages.length, 0, `consumeDeadRecords results must have ${0} discarded rejected messages`);
 
         t.end();
@@ -400,7 +395,7 @@ test('consumeDeadRecords with 1 unusable record', t => {
   const awsContext = sampleAwsContext('1.0.1', 'dev1', maxTimeInMillis);
 
   // Simulate ideal conditions - everything meant to be configured beforehand has been configured
-  configureDefaults(t, context, undefined);
+  configureKinesisAndDynamoDB(t, context, undefined);
 
   // Process the event
   try {
@@ -416,7 +411,7 @@ test('consumeDeadRecords with 1 unusable record', t => {
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    equal(t, context.streamConsumer.resubmitStreamName, streamName, 'context.streamConsumer.resubmitStreamName');
+    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(results => {
@@ -425,13 +420,13 @@ test('consumeDeadRecords with 1 unusable record', t => {
         const messages = results.messages;
         t.equal(messages.length, n, `consumeDeadRecords results must have ${n} messages`);
 
-        t.ok(results.processingCompleted, `consumeDeadRecords processing must be completed`);
-        t.notOk(results.processingFailed, `consumeDeadRecords processing must not be failed`);
-        t.notOk(results.processingTimedOut, `consumeDeadRecords processing must not be timed-out`);
+        t.ok(results.processing.completed, `consumeDeadRecords processing must be completed`);
+        t.notOk(results.processing.failed, `consumeDeadRecords processing must not be failed`);
+        t.notOk(results.processing.timedOut, `consumeDeadRecords processing must not be timed-out`);
 
         t.equal(results.unusableRecords.length, 1, `consumeDeadRecords results must have ${1} unusable records`);
         t.equal(results.discardedUnusableRecords.length, 1, `consumeDeadRecords results must have ${1} discarded unusable records`);
-        t.equal(results.resubmittedIncompleteMessages.length, 0, `consumeDeadRecords results must have ${0} resubmitted incomplete records`);
+        t.equal(results.handledIncompleteMessages.length, 0, `consumeDeadRecords results must have ${0} handled incomplete records`);
         t.equal(results.discardedRejectedMessages.length, 0, `consumeDeadRecords results must have ${0} discarded rejected messages`);
 
         t.end();
@@ -466,7 +461,7 @@ test('consumeDeadRecords with 1 message that fails its saveDeadRecord task, resu
   const awsContext = sampleAwsContext('1.0.1', 'dev1', maxTimeInMillis);
 
   // Simulate ideal conditions - everything meant to be configured beforehand has been configured
-  configureDefaults(t, context, undefined, new Error(`Planned DynamoDB failure`));
+  configureKinesisAndDynamoDB(t, context, undefined, new Error(`Planned DynamoDB failure`));
 
   // Process the event
   try {
@@ -482,7 +477,7 @@ test('consumeDeadRecords with 1 message that fails its saveDeadRecord task, resu
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    equal(t, context.streamConsumer.resubmitStreamName, streamName, 'context.streamConsumer.resubmitStreamName');
+    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(results => {
@@ -490,16 +485,16 @@ test('consumeDeadRecords with 1 message that fails its saveDeadRecord task, resu
         const n = 1;
         const messages = results.messages;
         t.equal(messages.length, n, `consumeDeadRecords results must have ${n} messages`);
-        checkMessagesTasksStates(t, messages, taskStates.Failed, taskStates.Success, context);
+        checkMessagesTasksStates(t, messages, taskStates.Failed, taskStates.CompletedState, context);
         t.equal(messages[0].drqTaskTracking.ones.saveDeadRecord.attempts, 1, `saveDeadRecord attempts must be 1`);
 
-        t.ok(results.processingCompleted, `consumeDeadRecords processing must be completed`);
-        t.notOk(results.processingFailed, `consumeDeadRecords processing must not be failed`);
-        t.notOk(results.processingTimedOut, `consumeDeadRecords processing must not be timed-out`);
+        t.ok(results.processing.completed, `consumeDeadRecords processing must be completed`);
+        t.notOk(results.processing.failed, `consumeDeadRecords processing must not be failed`);
+        t.notOk(results.processing.timedOut, `consumeDeadRecords processing must not be timed-out`);
 
         t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
         t.equal(results.discardedUnusableRecords.length, 0, `consumeDeadRecords results must have ${0} discarded unusable records`);
-        t.equal(results.resubmittedIncompleteMessages.length, 1, `consumeDeadRecords results must have ${1} resubmitted incomplete records`);
+        t.equal(results.handledIncompleteMessages.length, 1, `consumeDeadRecords results must have ${1} handled incomplete records`);
         t.equal(results.discardedRejectedMessages.length, 0, `consumeDeadRecords results must have ${0} discarded rejected messages`);
 
         t.end();
@@ -531,7 +526,7 @@ test('consumeDeadRecords with 1 message that fails its processOne task, but cann
 
   // Simulate ideal conditions - everything meant to be configured beforehand has been configured
   const fatalError = new Error('Disabling Kinesis');
-  configureDefaults(t, context, fatalError, new Error(`Planned DynamoDB failure`));
+  configureKinesisAndDynamoDB(t, context, fatalError, new Error(`Planned DynamoDB failure`));
 
   // Process the event
   try {
@@ -547,7 +542,7 @@ test('consumeDeadRecords with 1 message that fails its processOne task, but cann
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    equal(t, context.streamConsumer.resubmitStreamName, streamName, 'context.streamConsumer.resubmitStreamName');
+    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(messages => {
@@ -559,45 +554,37 @@ test('consumeDeadRecords with 1 message that fails its processOne task, but cann
         t.pass(`consumeDeadRecords must reject with error (${stringify(err)})`);
         t.equal(err, fatalError, `consumeDeadRecords error must be ${fatalError}`);
 
-        const results = err.streamProcessingPartialResults;
-        const messages = results.messages;
-        t.equal(messages.length, 1, `consumeDeadRecords results must have ${1} messages`);
-        t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
+        streamConsumer.awaitStreamConsumerResults(err.streamConsumerResults).then(results => {
+          const messages = results.messages;
 
-        t.ok(results.processingCompleted, `consumeDeadRecords processing must be completed`);
-        t.notOk(results.processingFailed, `consumeDeadRecords processing must not be failed`);
-        t.notOk(results.processingTimedOut, `consumeDeadRecords processing must not be timed-out`);
+          t.equal(messages.length, 1, `consumeDeadRecords results must have ${1} messages`);
+          t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
 
-        Promise.every(results.discardUnusableRecordsPromise, results.resubmitIncompleteMessagesPromise, results.discardRejectedMessagesPromise)
-          .then(resultsOrErrors => {
-            const discardedUnusableRecords = resultsOrErrors[0].result;
-            const discardUnusableRecordsError = resultsOrErrors[0].error;
-            const resubmittedIncompleteMessages = resultsOrErrors[1].result;
-            const resubmitIncompleteMessagesError = resultsOrErrors[1].error;
-            const discardedRejectedMessages = resultsOrErrors[2].result;
-            const discardRejectedMessagesError = resultsOrErrors[2].error;
+          t.ok(results.processing.completed, `consumeDeadRecords processing must be completed`);
+          t.notOk(results.processing.failed, `consumeDeadRecords processing must not be failed`);
+          t.notOk(results.processing.timedOut, `consumeDeadRecords processing must not be timed-out`);
 
-            if (!discardedUnusableRecords || discardUnusableRecordsError) {
-              t.fail(`discardUnusableRecords must not fail with ${discardUnusableRecordsError}`);
-            }
-            if (discardedUnusableRecords) {
-              t.equal(discardedUnusableRecords.length, 0, `discardUnusableRecords must have ${0} discarded unusable records`);
-            }
+          if (!results.discardedUnusableRecords || results.discardUnusableRecordsError) {
+            t.fail(`discardUnusableRecords must not fail with ${results.discardUnusableRecordsError}`);
+          }
+          if (results.discardedUnusableRecords) {
+            t.equal(results.discardedUnusableRecords.length, 0, `discardUnusableRecords must have ${0} discarded unusable records`);
+          }
 
-            if (resubmittedIncompleteMessages || !resubmitIncompleteMessagesError) {
-              t.fail(`resubmitIncompleteMessages must fail with ${resubmitIncompleteMessagesError}`);
-            }
-            t.equal(resubmitIncompleteMessagesError, fatalError, `resubmitIncompleteMessages must fail with ${fatalError}`);
+          if (results.handledIncompleteMessages || !results.handleIncompleteMessagesError) {
+            t.fail(`handleIncompleteMessages must fail with ${results.handleIncompleteMessagesError}`);
+          }
+          t.equal(results.handleIncompleteMessagesError, fatalError, `handleIncompleteMessages must fail with ${fatalError}`);
 
-            if (!discardedRejectedMessages || discardRejectedMessagesError) {
-              t.fail(`discardRejectedMessages must not fail with ${discardRejectedMessagesError}`);
-            }
-            if (discardedRejectedMessages) {
-              t.equal(discardedRejectedMessages.length, 0, `discardedRejectedMessages must have ${0} discarded rejected messages`);
-            }
+          if (!results.discardedRejectedMessages || results.discardRejectedMessagesError) {
+            t.fail(`discardRejectedMessages must not fail with ${results.discardRejectedMessagesError}`);
+          }
+          if (results.discardedRejectedMessages) {
+            t.equal(results.discardedRejectedMessages.length, 0, `discardedRejectedMessages must have ${0} discarded rejected messages`);
+          }
 
-            t.end();
-          });
+          t.end();
+        });
       });
 
   } catch (err) {
@@ -642,7 +629,7 @@ test('consumeDeadRecords with 1 message that succeeds, but has 1 abandoned task 
   const awsContext = sampleAwsContext('1.0.1', 'dev1', maxTimeInMillis);
 
   // Simulate ideal conditions - everything meant to be configured beforehand has been configured
-  configureDefaults(t, context, undefined, undefined);
+  configureKinesisAndDynamoDB(t, context, undefined, undefined);
 
   // Process the event
   try {
@@ -658,7 +645,7 @@ test('consumeDeadRecords with 1 message that succeeds, but has 1 abandoned task 
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    equal(t, context.streamConsumer.resubmitStreamName, streamName, 'context.streamConsumer.resubmitStreamName');
+    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(results => {
@@ -666,17 +653,17 @@ test('consumeDeadRecords with 1 message that succeeds, but has 1 abandoned task 
         const n = 1;
         const messages = results.messages;
         t.equal(messages.length, n, `consumeDeadRecords results must have ${n} messages`);
-        checkMessagesTasksStates(t, messages, taskStates.Success, taskStates.Abandoned, context);
+        checkMessagesTasksStates(t, messages, taskStates.CompletedState, taskStates.Abandoned, context);
         t.equal(messages[0].drqTaskTracking.ones.saveDeadRecord.attempts, 1, `saveDeadRecord attempts must be 1`);
         t.equal(messages[0].drqTaskTracking.alls.TaskX.attempts, 100, `TaskX attempts must be 100`);
 
-        t.ok(results.processingCompleted, `consumeDeadRecords processing must be completed`);
-        t.notOk(results.processingFailed, `consumeDeadRecords processing must not be failed`);
-        t.notOk(results.processingTimedOut, `consumeDeadRecords processing must not be timed-out`);
+        t.ok(results.processing.completed, `consumeDeadRecords processing must be completed`);
+        t.notOk(results.processing.failed, `consumeDeadRecords processing must not be failed`);
+        t.notOk(results.processing.timedOut, `consumeDeadRecords processing must not be timed-out`);
 
         t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
         t.equal(results.discardedUnusableRecords.length, 0, `consumeDeadRecords results must have ${0} discarded unusable records`);
-        t.equal(results.resubmittedIncompleteMessages.length, 0, `consumeDeadRecords results must have ${0} resubmitted incomplete records`);
+        t.equal(results.handledIncompleteMessages.length, 0, `consumeDeadRecords results must have ${0} handled incomplete records`);
         t.equal(results.discardedRejectedMessages.length, 1, `consumeDeadRecords results must have ${1} discarded rejected messages`);
 
         t.end();
@@ -715,7 +702,7 @@ test('consumeDeadRecords with 1 message that succeeds, but has 1 abandoned task 
 
   // Simulate ideal conditions - everything meant to be configured beforehand has been configured
   const fatalError = new Error('Disabling Kinesis');
-  configureDefaults(t, context, fatalError, undefined);
+  configureKinesisAndDynamoDB(t, context, fatalError, undefined);
 
   // Process the event
   try {
@@ -731,7 +718,7 @@ test('consumeDeadRecords with 1 message that succeeds, but has 1 abandoned task 
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    equal(t, context.streamConsumer.resubmitStreamName, streamName, 'context.streamConsumer.resubmitStreamName');
+    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(messages => {
@@ -743,45 +730,36 @@ test('consumeDeadRecords with 1 message that succeeds, but has 1 abandoned task 
         t.pass(`consumeDeadRecords must reject with error (${stringify(err)})`);
         t.equal(err, fatalError, `consumeDeadRecords error must be ${fatalError}`);
 
-        const results = err.streamProcessingPartialResults;
-        const messages = results.messages;
-        t.equal(messages.length, 1, `consumeDeadRecords results must have ${1} messages`);
-        t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
+        streamConsumer.awaitStreamConsumerResults(err.streamConsumerResults).then(results => {
+          const messages = results.messages;
+          t.equal(messages.length, 1, `consumeDeadRecords results must have ${1} messages`);
+          t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
 
-        t.ok(results.processingCompleted, `consumeDeadRecords processing must be completed`);
-        t.notOk(results.processingFailed, `consumeDeadRecords processing must not be failed`);
-        t.notOk(results.processingTimedOut, `consumeDeadRecords processing must not be timed-out`);
+          t.ok(results.processing.completed, `consumeDeadRecords processing must be completed`);
+          t.notOk(results.processing.failed, `consumeDeadRecords processing must not be failed`);
+          t.notOk(results.processing.timedOut, `consumeDeadRecords processing must not be timed-out`);
 
-        Promise.every(results.discardUnusableRecordsPromise, results.resubmitIncompleteMessagesPromise, results.discardRejectedMessagesPromise)
-          .then(resultsOrErrors => {
-            const discardedUnusableRecords = resultsOrErrors[0].result;
-            const discardUnusableRecordsError = resultsOrErrors[0].error;
-            const resubmittedIncompleteMessages = resultsOrErrors[1].result;
-            const resubmitIncompleteMessagesError = resultsOrErrors[1].error;
-            const discardedRejectedMessages = resultsOrErrors[2].result;
-            const discardRejectedMessagesError = resultsOrErrors[2].error;
+          if (!results.discardedUnusableRecords || results.discardUnusableRecordsError) {
+            t.fail(`discardUnusableRecords must not fail with ${results.discardUnusableRecordsError}`);
+          }
+          if (results.discardedUnusableRecords) {
+            t.equal(results.discardedUnusableRecords.length, 0, `discardUnusableRecords must have ${0} discarded unusable records`);
+          }
 
-            if (!discardedUnusableRecords || discardUnusableRecordsError) {
-              t.fail(`discardUnusableRecords must not fail with ${discardUnusableRecordsError}`);
-            }
-            if (discardedUnusableRecords) {
-              t.equal(discardedUnusableRecords.length, 0, `discardUnusableRecords must have ${0} discarded unusable records`);
-            }
+          if (!results.handledIncompleteMessages || results.handleIncompleteMessagesError) {
+            t.fail(`handleIncompleteMessages must not fail with ${results.handleIncompleteMessagesError}`);
+          }
+          if (results.handledIncompleteMessages) {
+            t.equal(results.handledIncompleteMessages.length, 0, `handleIncompleteMessages must have ${0} handled incomplete messages`);
+          }
 
-            if (!resubmittedIncompleteMessages || resubmitIncompleteMessagesError) {
-              t.fail(`resubmitIncompleteMessages must not fail with ${resubmitIncompleteMessagesError}`);
-            }
-            if (resubmittedIncompleteMessages) {
-              t.equal(resubmittedIncompleteMessages.length, 0, `resubmitIncompleteMessages must have ${0} resubmitted incomplete messages`);
-            }
+          if (results.discardedRejectedMessages || !results.discardRejectedMessagesError) {
+            t.fail(`discardRejectedMessages must fail with ${results.discardRejectedMessagesError}`);
+          }
+          t.equal(results.discardRejectedMessagesError, fatalError, `discardedRejectedMessages must fail with ${fatalError}`);
 
-            if (discardedRejectedMessages || !discardRejectedMessagesError) {
-              t.fail(`discardRejectedMessages must fail with ${discardRejectedMessagesError}`);
-            }
-            t.equal(discardRejectedMessagesError, fatalError, `discardedRejectedMessages must fail with ${fatalError}`);
-
-            t.end();
-          });
+          t.end();
+        });
       });
   } catch (err) {
     t.fail(`consumeDeadRecords should NOT have failed (${err})`, err.stack);
@@ -825,7 +803,7 @@ test('consumeDeadRecords with 1 message that succeeds, but has 1 old rejected ta
   const awsContext = sampleAwsContext('1.0.1', 'dev1', maxTimeInMillis);
 
   // Simulate ideal conditions - everything meant to be configured beforehand has been configured
-  configureDefaults(t, context, undefined, undefined);
+  configureKinesisAndDynamoDB(t, context, undefined, undefined);
 
   // Process the event
   try {
@@ -841,7 +819,7 @@ test('consumeDeadRecords with 1 message that succeeds, but has 1 old rejected ta
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    equal(t, context.streamConsumer.resubmitStreamName, streamName, 'context.streamConsumer.resubmitStreamName');
+    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(results => {
@@ -849,17 +827,17 @@ test('consumeDeadRecords with 1 message that succeeds, but has 1 old rejected ta
         const n = 1;
         const messages = results.messages;
         t.equal(messages.length, n, `consumeDeadRecords results must have ${n} messages`);
-        checkMessagesTasksStates(t, messages, taskStates.Success, taskStates.Rejected, context);
+        checkMessagesTasksStates(t, messages, taskStates.CompletedState, taskStates.Rejected, context);
         t.equal(messages[0].drqTaskTracking.ones.saveDeadRecord.attempts, 1, `saveDeadRecord attempts must be 1`);
         t.equal(messages[0].drqTaskTracking.alls.TaskX.attempts, 99, `TaskX attempts must be 99`);
 
-        t.ok(results.processingCompleted, `consumeDeadRecords processing must be completed`);
-        t.notOk(results.processingFailed, `consumeDeadRecords processing must not be failed`);
-        t.notOk(results.processingTimedOut, `consumeDeadRecords processing must not be timed-out`);
+        t.ok(results.processing.completed, `consumeDeadRecords processing must be completed`);
+        t.notOk(results.processing.failed, `consumeDeadRecords processing must not be failed`);
+        t.notOk(results.processing.timedOut, `consumeDeadRecords processing must not be timed-out`);
 
         t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
         t.equal(results.discardedUnusableRecords.length, 0, `consumeDeadRecords results must have ${0} discarded unusable records`);
-        t.equal(results.resubmittedIncompleteMessages.length, 0, `consumeDeadRecords results must have ${0} resubmitted incomplete records`);
+        t.equal(results.handledIncompleteMessages.length, 0, `consumeDeadRecords results must have ${0} handled incomplete records`);
         t.equal(results.discardedRejectedMessages.length, 1, `consumeDeadRecords results must have ${1} discarded rejected messages`);
 
         t.end();
@@ -874,7 +852,6 @@ test('consumeDeadRecords with 1 message that succeeds, but has 1 old rejected ta
     t.end(err);
   }
 });
-
 
 test('consumeDeadRecords with 1 message that succeeds, but has 1 old rejected task and cannot discard must fail', t => {
   const context = {};
@@ -909,7 +886,7 @@ test('consumeDeadRecords with 1 message that succeeds, but has 1 old rejected ta
 
   // Simulate ideal conditions - everything meant to be configured beforehand has been configured
   const fatalError = new Error('Disabling Kinesis');
-  configureDefaults(t, context, fatalError, undefined);
+  configureKinesisAndDynamoDB(t, context, fatalError, undefined);
 
   // Process the event
   try {
@@ -925,7 +902,7 @@ test('consumeDeadRecords with 1 message that succeeds, but has 1 old rejected ta
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    equal(t, context.streamConsumer.resubmitStreamName, streamName, 'context.streamConsumer.resubmitStreamName');
+    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(messages => {
@@ -937,45 +914,36 @@ test('consumeDeadRecords with 1 message that succeeds, but has 1 old rejected ta
         t.pass(`consumeDeadRecords must reject with error (${stringify(err)})`);
         t.equal(err, fatalError, `consumeDeadRecords error must be ${fatalError}`);
 
-        const results = err.streamProcessingPartialResults;
-        const messages = results.messages;
-        t.equal(messages.length, 1, `consumeDeadRecords results must have ${1} messages`);
-        t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
+        streamConsumer.awaitStreamConsumerResults(err.streamConsumerResults).then(results => {
+          const messages = results.messages;
+          t.equal(messages.length, 1, `consumeDeadRecords results must have ${1} messages`);
+          t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
 
-        t.ok(results.processingCompleted, `consumeDeadRecords processing must be completed`);
-        t.notOk(results.processingFailed, `consumeDeadRecords processing must not be failed`);
-        t.notOk(results.processingTimedOut, `consumeDeadRecords processing must not be timed-out`);
+          t.ok(results.processing.completed, `consumeDeadRecords processing must be completed`);
+          t.notOk(results.processing.failed, `consumeDeadRecords processing must not be failed`);
+          t.notOk(results.processing.timedOut, `consumeDeadRecords processing must not be timed-out`);
 
-        Promise.every(results.discardUnusableRecordsPromise, results.resubmitIncompleteMessagesPromise, results.discardRejectedMessagesPromise)
-          .then(resultsOrErrors => {
-            const discardedUnusableRecords = resultsOrErrors[0].result;
-            const discardUnusableRecordsError = resultsOrErrors[0].error;
-            const resubmittedIncompleteMessages = resultsOrErrors[1].result;
-            const resubmitIncompleteMessagesError = resultsOrErrors[1].error;
-            const discardedRejectedMessages = resultsOrErrors[2].result;
-            const discardRejectedMessagesError = resultsOrErrors[2].error;
+          if (!results.discardedUnusableRecords || results.discardUnusableRecordsError) {
+            t.fail(`discardUnusableRecords must not fail with ${results.discardUnusableRecordsError}`);
+          }
+          if (results.discardedUnusableRecords) {
+            t.equal(results.discardedUnusableRecords.length, 0, `discardUnusableRecords must have ${0} discarded unusable records`);
+          }
 
-            if (!discardedUnusableRecords || discardUnusableRecordsError) {
-              t.fail(`discardUnusableRecords must not fail with ${discardUnusableRecordsError}`);
-            }
-            if (discardedUnusableRecords) {
-              t.equal(discardedUnusableRecords.length, 0, `discardUnusableRecords must have ${0} discarded unusable records`);
-            }
+          if (!results.handledIncompleteMessages || results.handleIncompleteMessagesError) {
+            t.fail(`handleIncompleteMessages must not fail with ${results.handleIncompleteMessagesError}`);
+          }
+          if (results.handledIncompleteMessages) {
+            t.equal(results.handledIncompleteMessages.length, 0, `handleIncompleteMessages must have ${0} handled incomplete messages`);
+          }
 
-            if (!resubmittedIncompleteMessages || resubmitIncompleteMessagesError) {
-              t.fail(`resubmitIncompleteMessages must not fail with ${resubmitIncompleteMessagesError}`);
-            }
-            if (resubmittedIncompleteMessages) {
-              t.equal(resubmittedIncompleteMessages.length, 0, `resubmitIncompleteMessages must have ${0} resubmitted incomplete messages`);
-            }
+          if (results.discardedRejectedMessages || !results.discardRejectedMessagesError) {
+            t.fail(`discardRejectedMessages must fail with ${results.discardRejectedMessagesError}`);
+          }
+          t.equal(results.discardRejectedMessagesError, fatalError, `discardedRejectedMessages must fail with ${fatalError}`);
 
-            if (discardedRejectedMessages || !discardRejectedMessagesError) {
-              t.fail(`discardRejectedMessages must fail with ${discardRejectedMessagesError}`);
-            }
-            t.equal(discardRejectedMessagesError, fatalError, `discardedRejectedMessages must fail with ${fatalError}`);
-
-            t.end();
-          });
+          t.end();
+        });
       });
 
 
@@ -996,7 +964,8 @@ test('consumeDeadRecords with 1 message that exceeds max number of attempts on i
   const region = setupRegion('us-west-2');
 
   // Simulate ideal conditions - everything meant to be configured beforehand has been configured
-  configureDefaults(t, context, undefined, new Error('Planned DynamoDB error'));
+  configureKinesisAndDynamoDB(t, context, undefined, new Error('Planned DynamoDB error'));
+  drqConsumer.configureDefaultDeadRecordQueueProcessing(context, true);
 
   // Generate a sample AWS event
   const streamName = 'DeadRecordQueue_DEV2';
@@ -1048,7 +1017,7 @@ test('consumeDeadRecords with 1 message that exceeds max number of attempts on i
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    equal(t, context.streamConsumer.resubmitStreamName, streamName, 'context.streamConsumer.resubmitStreamName');
+    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(results => {
@@ -1059,13 +1028,13 @@ test('consumeDeadRecords with 1 message that exceeds max number of attempts on i
         checkMessagesTasksStates(t, messages, taskStates.Discarded, taskStates.Discarded, context);
         t.equal(messages[0].drqTaskTracking.ones.saveDeadRecord.attempts, maxNumberOfAttempts, `saveDeadRecord attempts must be ${maxNumberOfAttempts}`);
 
-        t.ok(results.processingCompleted, `consumeDeadRecords processing must be completed`);
-        t.notOk(results.processingFailed, `consumeDeadRecords processing must not be failed`);
-        t.notOk(results.processingTimedOut, `consumeDeadRecords processing must not be timed-out`);
+        t.ok(results.processing.completed, `consumeDeadRecords processing must be completed`);
+        t.notOk(results.processing.failed, `consumeDeadRecords processing must not be failed`);
+        t.notOk(results.processing.timedOut, `consumeDeadRecords processing must not be timed-out`);
 
         t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
         t.equal(results.discardedUnusableRecords.length, 0, `consumeDeadRecords results must have ${0} discarded unusable records`);
-        t.equal(results.resubmittedIncompleteMessages.length, 0, `consumeDeadRecords results must have ${0} resubmitted incomplete records`);
+        t.equal(results.handledIncompleteMessages.length, 0, `consumeDeadRecords results must have ${0} handled incomplete records`);
         t.equal(results.discardedRejectedMessages.length, 1, `consumeDeadRecords results must have ${1} discarded rejected messages`);
 
         t.end();
@@ -1089,7 +1058,8 @@ test('consumeDeadRecords with 1 message that exceeds max number of attempts on i
 
   // Simulate ideal conditions - everything meant to be configured beforehand has been configured
   const fatalError = new Error('Disabling Kinesis');
-  configureDefaults(t, context, fatalError, new Error('Planned DynamoDB error'));
+  configureKinesisAndDynamoDB(t, context, fatalError, new Error('Planned DynamoDB error'));
+  drqConsumer.configureDefaultDeadRecordQueueProcessing(context, true);
 
   // Generate a sample AWS event
   const streamName = 'DeadRecordQueue_DEV2';
@@ -1141,7 +1111,7 @@ test('consumeDeadRecords with 1 message that exceeds max number of attempts on i
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    equal(t, context.streamConsumer.resubmitStreamName, streamName, 'context.streamConsumer.resubmitStreamName');
+    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(messages => {
@@ -1153,45 +1123,36 @@ test('consumeDeadRecords with 1 message that exceeds max number of attempts on i
         t.pass(`consumeDeadRecords must reject with error (${stringify(err)})`);
         t.equal(err, fatalError, `consumeDeadRecords error must be ${fatalError}`);
 
-        const results = err.streamProcessingPartialResults;
-        const messages = results.messages;
-        t.equal(messages.length, 1, `consumeDeadRecords results must have ${1} messages`);
-        t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
+        streamConsumer.awaitStreamConsumerResults(err.streamConsumerResults).then(results => {
+          const messages = results.messages;
+          t.equal(messages.length, 1, `consumeDeadRecords results must have ${1} messages`);
+          t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
 
-        t.ok(results.processingCompleted, `consumeDeadRecords processing must be completed`);
-        t.notOk(results.processingFailed, `consumeDeadRecords processing must not be failed`);
-        t.notOk(results.processingTimedOut, `consumeDeadRecords processing must not be timed-out`);
+          t.ok(results.processing.completed, `consumeDeadRecords processing must be completed`);
+          t.notOk(results.processing.failed, `consumeDeadRecords processing must not be failed`);
+          t.notOk(results.processing.timedOut, `consumeDeadRecords processing must not be timed-out`);
 
-        Promise.every(results.discardUnusableRecordsPromise, results.resubmitIncompleteMessagesPromise, results.discardRejectedMessagesPromise)
-          .then(resultsOrErrors => {
-            const discardedUnusableRecords = resultsOrErrors[0].result;
-            const discardUnusableRecordsError = resultsOrErrors[0].error;
-            const resubmittedIncompleteMessages = resultsOrErrors[1].result;
-            const resubmitIncompleteMessagesError = resultsOrErrors[1].error;
-            const discardedRejectedMessages = resultsOrErrors[2].result;
-            const discardRejectedMessagesError = resultsOrErrors[2].error;
+          if (!results.discardedUnusableRecords || results.discardUnusableRecordsError) {
+            t.fail(`discardUnusableRecords must not fail with ${results.discardUnusableRecordsError}`);
+          }
+          if (results.discardedUnusableRecords) {
+            t.equal(results.discardedUnusableRecords.length, 0, `discardUnusableRecords must have ${0} discarded unusable records`);
+          }
 
-            if (!discardedUnusableRecords || discardUnusableRecordsError) {
-              t.fail(`discardUnusableRecords must not fail with ${discardUnusableRecordsError}`);
-            }
-            if (discardedUnusableRecords) {
-              t.equal(discardedUnusableRecords.length, 0, `discardUnusableRecords must have ${0} discarded unusable records`);
-            }
+          if (!results.handledIncompleteMessages || results.handleIncompleteMessagesError) {
+            t.fail(`handleIncompleteMessages must not fail with ${results.handleIncompleteMessagesError}`);
+          }
+          if (results.handledIncompleteMessages) {
+            t.equal(results.handledIncompleteMessages.length, 0, `handleIncompleteMessages must have ${0} handled incomplete messages`);
+          }
 
-            if (!resubmittedIncompleteMessages || resubmitIncompleteMessagesError) {
-              t.fail(`resubmitIncompleteMessages must not fail with ${resubmitIncompleteMessagesError}`);
-            }
-            if (resubmittedIncompleteMessages) {
-              t.equal(resubmittedIncompleteMessages.length, 0, `resubmitIncompleteMessages must have ${0} resubmitted incomplete messages`);
-            }
+          if (results.discardedRejectedMessages || !results.discardRejectedMessagesError) {
+            t.fail(`discardRejectedMessages must fail with ${results.discardRejectedMessagesError}`);
+          }
+          t.equal(results.discardRejectedMessagesError, fatalError, `discardedRejectedMessages must fail with ${fatalError}`);
 
-            if (discardedRejectedMessages || !discardRejectedMessagesError) {
-              t.fail(`discardRejectedMessages must fail with ${discardRejectedMessagesError}`);
-            }
-            t.equal(discardRejectedMessagesError, fatalError, `discardedRejectedMessages must fail with ${fatalError}`);
-
-            t.end();
-          });
+          t.end();
+        });
       });
 
   } catch (err) {
@@ -1211,7 +1172,7 @@ test('consumeDeadRecords with 1 message and triggered timeout promise, must resu
   const region = setupRegion('us-west-2');
 
   // Simulate ideal conditions - everything meant to be configured beforehand has been configured
-  configureDefaults(t, context, undefined, undefined, 15);
+  configureKinesisAndDynamoDB(t, context, undefined, undefined, 15);
 
   const n = 1;
 
@@ -1237,7 +1198,7 @@ test('consumeDeadRecords with 1 message and triggered timeout promise, must resu
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    equal(t, context.streamConsumer.resubmitStreamName, streamName, 'context.streamConsumer.resubmitStreamName');
+    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(results => {
@@ -1245,16 +1206,16 @@ test('consumeDeadRecords with 1 message and triggered timeout promise, must resu
         const n = 1;
         const messages = results.messages;
         t.equal(messages.length, n, `consumeDeadRecords results must have ${n} messages`);
-        checkMessagesTasksStates(t, messages, taskStates.Unstarted, taskStates.Unstarted, context);
+        checkMessagesTasksStates(t, messages, taskStates.TimedOut, taskStates.TimedOut, context);
         t.equal(messages[0].drqTaskTracking.ones.saveDeadRecord.attempts, 1, `saveDeadRecord attempts must be 1`);
 
-        t.notOk(results.processingCompleted, `consumeDeadRecords processing must not be completed`);
-        t.notOk(results.processingFailed, `consumeDeadRecords processing must not be failed`);
-        t.ok(results.processingTimedOut, `consumeDeadRecords processing must be timed-out`);
+        t.notOk(results.processing.completed, `consumeDeadRecords processing must not be completed`);
+        t.notOk(results.processing.failed, `consumeDeadRecords processing must not be failed`);
+        t.ok(results.processing.timedOut, `consumeDeadRecords processing must be timed-out`);
 
         t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
         t.equal(results.discardedUnusableRecords.length, 0, `consumeDeadRecords results must have ${0} discarded unusable records`);
-        t.equal(results.resubmittedIncompleteMessages.length, 1, `consumeDeadRecords results must have ${1} resubmitted incomplete records`);
+        t.equal(results.handledIncompleteMessages.length, 1, `consumeDeadRecords results must have ${1} handled incomplete records`);
         t.equal(results.discardedRejectedMessages.length, 0, `consumeDeadRecords results must have ${0} discarded rejected messages`);
 
         t.end();
@@ -1274,7 +1235,7 @@ test('consumeDeadRecords with 1 message and triggered timeout promise, must fail
 
   // Simulate ideal conditions - everything meant to be configured beforehand has been configured
   const fatalError = new Error('Disabling Kinesis');
-  configureDefaults(t, context, fatalError, undefined, 15);
+  configureKinesisAndDynamoDB(t, context, fatalError, undefined, 15);
 
   const n = 1;
 
@@ -1300,7 +1261,7 @@ test('consumeDeadRecords with 1 message and triggered timeout promise, must fail
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    equal(t, context.streamConsumer.resubmitStreamName, streamName, 'context.streamConsumer.resubmitStreamName');
+    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(messages => {
@@ -1312,45 +1273,36 @@ test('consumeDeadRecords with 1 message and triggered timeout promise, must fail
         t.pass(`consumeDeadRecords must reject with error (${stringify(err)})`);
         t.equal(err, fatalError, `consumeDeadRecords error must be ${fatalError}`);
 
-        const results = err.streamProcessingPartialResults;
-        const messages = results.messages;
-        t.equal(messages.length, 1, `consumeDeadRecords results must have ${1} messages`);
-        t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
+        streamConsumer.awaitStreamConsumerResults(err.streamConsumerResults).then(results => {
+          const messages = results.messages;
+          t.equal(messages.length, 1, `consumeDeadRecords results must have ${1} messages`);
+          t.equal(results.unusableRecords.length, 0, `consumeDeadRecords results must have ${0} unusable records`);
 
-        t.notOk(results.processingCompleted, `consumeDeadRecords processing must not be completed`);
-        t.notOk(results.processingFailed, `consumeDeadRecords processing must not be failed`);
-        t.ok(results.processingTimedOut, `consumeDeadRecords processing must be timed-out`);
+          t.notOk(results.processing.completed, `consumeDeadRecords processing must not be completed`);
+          t.notOk(results.processing.failed, `consumeDeadRecords processing must not be failed`);
+          t.ok(results.processing.timedOut, `consumeDeadRecords processing must be timed-out`);
 
-        Promise.every(results.discardUnusableRecordsPromise, results.resubmitIncompleteMessagesPromise, results.discardRejectedMessagesPromise)
-          .then(resultsOrErrors => {
-            const discardedUnusableRecords = resultsOrErrors[0].result;
-            const discardUnusableRecordsError = resultsOrErrors[0].error;
-            const resubmittedIncompleteMessages = resultsOrErrors[1].result;
-            const resubmitIncompleteMessagesError = resultsOrErrors[1].error;
-            const discardedRejectedMessages = resultsOrErrors[2].result;
-            const discardRejectedMessagesError = resultsOrErrors[2].error;
+          if (!results.discardedUnusableRecords || results.discardUnusableRecordsError) {
+            t.fail(`discardUnusableRecords must not fail with ${results.discardUnusableRecordsError}`);
+          }
+          if (results.discardedUnusableRecords) {
+            t.equal(results.discardedUnusableRecords.length, 0, `discardUnusableRecords must have ${0} discarded unusable records`);
+          }
 
-            if (!discardedUnusableRecords || discardUnusableRecordsError) {
-              t.fail(`discardUnusableRecords must not fail with ${discardUnusableRecordsError}`);
-            }
-            if (discardedUnusableRecords) {
-              t.equal(discardedUnusableRecords.length, 0, `discardUnusableRecords must have ${0} discarded unusable records`);
-            }
+          if (results.handledIncompleteMessages || !results.handleIncompleteMessagesError) {
+            t.fail(`handleIncompleteMessages must fail with ${results.handleIncompleteMessagesError}`);
+          }
+          t.equal(results.handleIncompleteMessagesError, fatalError, `handleIncompleteMessages must fail with ${fatalError}`);
 
-            if (resubmittedIncompleteMessages || !resubmitIncompleteMessagesError) {
-              t.fail(`resubmitIncompleteMessages must fail with ${resubmitIncompleteMessagesError}`);
-            }
-            t.equal(resubmitIncompleteMessagesError, fatalError, `resubmitIncompleteMessages must fail with ${fatalError}`);
+          if (!results.discardedRejectedMessages || results.discardRejectedMessagesError) {
+            t.fail(`discardRejectedMessages must not fail with ${results.discardRejectedMessagesError}`);
+          }
+          if (results.discardedRejectedMessages) {
+            t.equal(results.discardedRejectedMessages.length, 0, `discardedRejectedMessages must have ${0} discarded rejected messages`);
+          }
 
-            if (!discardedRejectedMessages || discardRejectedMessagesError) {
-              t.fail(`discardRejectedMessages must not fail with ${discardRejectedMessagesError}`);
-            }
-            if (discardedRejectedMessages) {
-              t.equal(discardedRejectedMessages.length, 0, `discardedRejectedMessages must have ${0} discarded rejected messages`);
-            }
-
-            t.end();
-          });
+          t.end();
+        });
 
       });
 
@@ -1359,4 +1311,3 @@ test('consumeDeadRecords with 1 message and triggered timeout promise, must fail
     t.end(err);
   }
 });
-
