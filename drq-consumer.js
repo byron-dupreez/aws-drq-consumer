@@ -77,32 +77,14 @@ module.exports.handler = function (event, awsContext, callback) {
 // =====================================================================================================================
 
 /**
- * @typedef {StreamProcessingOptions} DRQProcessingSettings - DRQ stream processing settings to use
- * @property {string|undefined} [deadRecordTableName] - optional DynamoDB dead record table name (defaults to 'DeadRecord' if undefined)
- */
-
-/**
- * @typedef {StreamProcessingOptions} DRQProcessingOptions - DRQ stream processing options to use if no corresponding settings are provided
- * @property {string|undefined} [deadRecordTableName] - optional DynamoDB dead record table name (defaults to 'DeadRecord' if undefined)
- */
-
-/**
- * @typedef {StreamConsumerSettings} DRQSettings - DRQ configuration settings to use
- * @property {DRQProcessingSettings|undefined} [streamProcessingSettings] - optional stream processing settings to use to configure stream processing
- */
-
-/**
- * @typedef {StreamConsumerOptions} DRQOptions - DRQ configuration options to use if no corresponding settings are provided
- * @property {DRQProcessingOptions|undefined} [streamProcessingOptions] - optional stream processing options to use to configure stream processing
- */
-
-/**
  * Configures the settings and dependencies of a Dead Record Queue consumer.
- * @param {Object} context - the context
- * @param {DRQSettings|undefined} [settings] - optional configuration settings to use
- * @param {DRQOptions|undefined} [options] - configuration options to use if no corresponding settings are provided
+ * @param {Object|DRQConsuming} context - the context
+ * @param {DRQConsumerSettings|undefined} [settings] - optional configuration settings to use
+ * @param {DRQConsumerOptions|undefined} [options] - configuration options to use if no corresponding settings are provided
  * @param {Object} event - an AWS event
  * @param {Object} awsContext - the AWS context
+ * @return {DRQConsuming} context - the context configured with DRQ stream consumer runtime settings
+ * @throws {Error} an error if the region and/or stage cannot be resolved
  */
 function configureDeadRecordQueueConsumer(context, settings, options, event, awsContext) {
   // Configure DRQ stream processing (plus logging, stage handling & kinesis) if not configured yet
@@ -111,6 +93,7 @@ function configureDeadRecordQueueConsumer(context, settings, options, event, aws
 
   // Configure the DRQ stream consumer
   streamConsumer.configureStreamConsumer(context, settings, options, event, awsContext);
+  return context;
 }
 
 /**
@@ -118,14 +101,14 @@ function configureDeadRecordQueueConsumer(context, settings, options, event, aws
  * stream processing settings partially overridden by the given DRQ stream processing options (if any), but only if
  * stream processing is not already configured on the given context OR if forceConfiguration is true.
  *
- * @param {Object} context - the context to configure
+ * @param {Object|DRQProcessing|StreamProcessing|StageHandling|Logging} context - the context to be configured with DRQ stream processing settings
  * @param {DRQProcessingSettings|undefined} [settings] - optional stream processing settings to use to configure stream processing
  * @param {DRQProcessingOptions|undefined} [options] - optional stream processing options to use to override default options
- * @param {OtherSettings|undefined} [otherSettings] - optional other settings to use to configure dependencies
- * @param {OtherOptions|undefined} [otherOptions] - optional other options to use to configure dependencies if corresponding settings are not provided
+ * @param {SPOtherSettings|undefined} [otherSettings] - optional other settings to use to configure dependencies
+ * @param {SPOtherOptions|undefined} [otherOptions] - optional other options to use to configure dependencies if corresponding settings are not provided
  * @param {boolean|undefined} [forceConfiguration] - whether or not to force configuration of the given settings, which
  * will override any previously configured DRQ stream processing settings on the given context
- * @returns {Object} the given context
+ * @return {DRQProcessing} the given context configured with DRQ stream processing settings
  */
 function configureDeadRecordQueueProcessing(context, settings, options, otherSettings, otherOptions, forceConfiguration) {
   const settingsAvailable = settings && typeof settings === 'object';
@@ -154,10 +137,10 @@ function configureDeadRecordQueueProcessing(context, settings, options, otherSet
  * Configures the given context with the default DRQ stream processing settings, but only if stream processing is not
  * already configured on the given context OR if forceConfiguration is true.
  *
- * @param {Object} context - the context to configure
+ * @param {Object|DRQProcessing|StreamProcessing|StageHandling|Logging} context - the context to configure with default DRQ stream processing settings
  * @param {boolean|undefined} [forceConfiguration] - whether or not to force configuration of the given settings, which
  * will override any previously configured DRQ stream processing settings on the given context
- * @returns {Object} the given context
+ * @returns {DRQProcessing} the given context configured with DRQ stream processing settings
  */
 function configureDefaultDeadRecordQueueProcessing(context, forceConfiguration) {
   const drqOptions = require('./drq-options.json');
@@ -225,18 +208,11 @@ function loadDefaultDeadRecordQueueProcessingOptions() {
 // =====================================================================================================================
 
 /**
- * @typedef {Object} DeadRecord - represents a common structure for storing an unusable record as a dead record
- * @property {string} regionEventSourceAndName - the AWS region (if available, else "aws"), the event source (e.g.
- * kinesis, ses, ...) and a selected event name, which varies by event type
- * @property {string} keys - a string containing selected, pipe-separated ('|') key-related values to provide a range key value
- * @property {Object} record - the original unusable record
- */
-
 /**
  * Consumes all of the unusable/dead records in the given event by transforming them into dead records and writing them
  * to a DynamoDB dead record table.
  * @param {Object} event - an AWS event
- * @param {Object} context - the context
+ * @param {DRQConsuming} context - the context configured with DRQ stream consumer runtime settings
  * @returns {Promise.<StreamConsumerResults|StreamConsumerError>} a resolved promise with the full stream processing
  * results or a rejected promise with an error with partial stream processing results
  */
@@ -251,9 +227,7 @@ function consumeDeadRecords(event, context) {
 /**
  * Transforms the given unusable record into a dead record (DeadRecord) and saves it to the DynamoDB dead record table.
  * @param {Object} record - an AWS event record to save
- * @param {Object} context - the context
- * @param {Object} context.streamProcessing - the stream processing configuration on the context
- * @param {string} context.streamProcessing.deadRecordTableName - the name of the dead record table to which to save
+ * @param {DRQConsuming} context - the context configured with DRQ stream consumer runtime settings
  * @returns {*} the DynamoDB put result
  */
 function saveDeadRecord(record, context) {
@@ -420,7 +394,7 @@ function toDeadRecordFromSESRecord(record) {
  * which to discard unusable, dead records (i.e. there is no "DeaderDead Record Queue").
  *
  * @param {Object[]} unusableRecords - UNUSABLE, unusable records
- * @param {Object} context - the context
+ * @param {DRQConsuming} context - the context configured with DRQ stream consumer runtime settings
  * @returns {Promise.<Array>} the given array of unusable records
  */
 function eliminateUnusableRecords(unusableRecords, context) {
