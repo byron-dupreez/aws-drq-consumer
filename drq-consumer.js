@@ -278,8 +278,8 @@ function saveDeadRecord(record, context) {
 
   return dynamoDBDocClient.put(request).promise()
     .then(result => {
-      context.trace(`DRQ consumer saved dead record (${deadRecord.regionEventSourceAndName}, ${deadRecord.keys}) to ${tableName}`);
-      task.succeed(result, true);
+      context.info(`DRQ consumer saved dead record (${deadRecord.regionEventSourceAndName}, ${deadRecord.keys}) to ${tableName} - result (${JSON.stringify(result)})`);
+      task.succeed(result, false);
       return result;
     })
     .catch(err => {

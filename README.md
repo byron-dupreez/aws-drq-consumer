@@ -1,4 +1,4 @@
-# aws-drq-consumer v1.0.0-beta.2
+# aws-drq-consumer v1.0.0-beta.3
 
 An AWS Lambda that will consume unusable, "dead" records from a Dead Record Queue (DRQ) Kinesis stream and save them
 to DynamoDB. Alternatively, can be used as a module to configure another more-customised version of a DRQ consumer
@@ -56,6 +56,16 @@ $ tape test/*.js
 See the [package source](https://github.com/byron-dupreez/aws-drq-consumer) for more details.
 
 ## Changes
+
+### 1.0.0-beta.3
+- Changed `drq-consumer.js` module:
+  - Changed `saveDeadRecord` function to NOT override an existing timed out task state when succeeding its task
+- Updated `core-functions` dependency to version 2.0.11
+- Updated `logging-utils` dependency to version 3.0.6
+- Updated `task-utils` dependency to version 4.0.5
+- Updated `aws-core-utils` dependency to version 5.0.6
+- Updated `aws-stream-consumer` dependency to version 1.0.0-beta.12
+- Replaced `node-uuid` dependency with `uuid` dependency in `test\package.json`
 
 ### 1.0.0-beta.2
 - Major refactoring to synchronize with changes to `aws-stream-consumer` and other dependencies

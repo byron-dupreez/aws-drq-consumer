@@ -207,7 +207,6 @@ test('consumeDeadRecords with 1 message that succeeds all tasks', t => {
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    t.ok(context.streamConsumer, 'context.streamConsumer');
     equal(t, context.streamProcessing.deadRecordTableName, 'DeadRecord', 'context.streamProcessing.deadRecordTableName');
 
     promise
@@ -274,7 +273,6 @@ test('consumeDeadRecords with 1 message that succeeds all tasks (despite broken 
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(results => {
@@ -342,7 +340,6 @@ test('consumeDeadRecords with 10 messages that succeed all tasks (despite broken
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(results => {
@@ -411,7 +408,6 @@ test('consumeDeadRecords with 1 unusable record', t => {
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(results => {
@@ -477,7 +473,6 @@ test('consumeDeadRecords with 1 message that fails its saveDeadRecord task, resu
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(results => {
@@ -542,7 +537,6 @@ test('consumeDeadRecords with 1 message that fails its processOne task, but cann
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(messages => {
@@ -645,7 +639,6 @@ test('consumeDeadRecords with 1 message that succeeds, but has 1 abandoned task 
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(results => {
@@ -718,7 +711,6 @@ test('consumeDeadRecords with 1 message that succeeds, but has 1 abandoned task 
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(messages => {
@@ -819,7 +811,6 @@ test('consumeDeadRecords with 1 message that succeeds, but has 1 old rejected ta
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(results => {
@@ -902,7 +893,6 @@ test('consumeDeadRecords with 1 message that succeeds, but has 1 old rejected ta
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(messages => {
@@ -1017,7 +1007,6 @@ test('consumeDeadRecords with 1 message that exceeds max number of attempts on i
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(results => {
@@ -1111,7 +1100,6 @@ test('consumeDeadRecords with 1 message that exceeds max number of attempts on i
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(messages => {
@@ -1198,7 +1186,6 @@ test('consumeDeadRecords with 1 message and triggered timeout promise, must resu
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(results => {
@@ -1261,7 +1248,6 @@ test('consumeDeadRecords with 1 message and triggered timeout promise, must fail
     equal(t, context.region, region, 'context.region');
     equal(t, context.stage, 'dev1', 'context.stage');
     equal(t, context.awsContext, awsContext, 'context.awsContext');
-    t.ok(context.streamConsumer, 'context.streamConsumer');
 
     promise
       .then(messages => {
