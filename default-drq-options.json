@@ -6,10 +6,22 @@
   },
 
   "stageHandlingOptions": {
+    "envStageName": "STAGE",
     "streamNameStageSeparator": "_",
     "resourceNameStageSeparator": "_",
     "extractInCase": "lower",
     "injectInCase": "upper"
+  },
+
+  "customOptions": {
+  },
+
+  "kinesisOptions": {
+    "maxRetries": 1
+  },
+
+  "dynamoDBDocClientOptions": {
+    "maxRetries": 1
   },
 
   "streamProcessingOptions": {
@@ -19,12 +31,6 @@
     "maxNumberOfAttempts": 10,
     "deadRecordQueueName": "DeadRecordQueue",
     "deadMessageQueueName": "DeadMessageQueue",
-    "kinesisOptions": {
-      "maxRetries": 1
-    },
-    "dynamoDBDocClientOptions": {
-      "maxRetries": 1
-    },
     "deadRecordTableName": "DeadRecord"
   }
 
