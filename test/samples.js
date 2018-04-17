@@ -1,21 +1,24 @@
 'use strict';
 
-/**
- * Generates samples of various AWS artifacts for testing.
- * @author Byron du Preez
- */
+const Strings = require('core-functions/strings');
+const isNotBlank = Strings.isNotBlank;
 
 const uuid = require('uuid');
 const base64 = require('core-functions/base64');
 
+const copying = require('core-functions/copying');
+const copy = copying.copy;
+const deep = {deep: true};
+
+const dynamoDBUtils = require('aws-core-utils/dynamodb-utils');
+const arns = require('aws-core-utils/arns');
+
+// Constants
 const sampleAwsAccountId = "XXXXXXXXXXXX";
-const sampleIdentityArn = 'DUMMY_IDENTITY_ARN';
+const sampleIdentityArn = 'identityarn';
 
-const sampleFunctionName = "testFunc";
+const sampleFunctionName = "test-func";
 const latestFunctionVersion = "$LATEST";
-
-
-let nextSequenceNumber = 1;
 
 const sampleMessage = {
   key1: 'value1',
@@ -23,35 +26,55 @@ const sampleMessage = {
   key3: 'value3'
 };
 
-module.exports = {
-  sampleAwsAccountId: sampleAwsAccountId,
-  sampleIdentityArn: sampleIdentityArn,
-  sampleFunctionName: sampleFunctionName,
-  sampleMessage: sampleMessage,
-  latestFunctionVersion: latestFunctionVersion,
+let nextSequenceNumber = 1;
+
+/**
+ * Utilities for generating samples of various AWS artifacts for testing.
+ * @author Byron du Preez
+ */
+exports.$ = '$'; //IDE workaround
+
+exports.sampleAwsAccountId = sampleAwsAccountId;
+exports.sampleIdentityArn = sampleIdentityArn;
+exports.sampleFunctionName = sampleFunctionName;
+exports.sampleMessage = sampleMessage;
+exports.latestFunctionVersion = latestFunctionVersion;
 
   // General
-  sampleNumberString: sampleNumberString,
+exports.sampleNumberString = sampleNumberString;
 
   // For AWS contexts
-  sampleInvokedFunctionArn: sampleInvokedFunctionArn,
-  sampleAwsContext: sampleAwsContext,
+exports.sampleInvokedFunctionArn = sampleInvokedFunctionArn;
+exports.sampleAwsContext = sampleAwsContext;
 
   // For Kinesis events
-  sampleStreamName: sampleStreamName,
-  sampleKinesisEventSourceArn: sampleEventSourceArn,
-  sampleKinesisEventSourceArnFromPrefixSuffix: sampleEventSourceArnFromPrefixSuffix,
-  sampleBase64Data: sampleBase64Data,
-  sampleKinesisRecord: sampleKinesisRecord,
-  sampleKinesisEventWithSampleRecord: sampleKinesisEventWithSampleRecord,
-  sampleKinesisEventWithRecord: sampleKinesisEventWithRecord,
-  sampleKinesisEventWithRecords: sampleKinesisEventWithRecords
-};
+exports.sampleStreamName = sampleStreamName;
+exports.sampleKinesisEventSourceArn = sampleKinesisEventSourceArn;
+exports.sampleKinesisEventSourceArnFromPrefixSuffix = sampleKinesisEventSourceArnFromPrefixSuffix;
+exports.sampleBase64Data = sampleBase64Data;
+exports.sampleKinesisPutRecordRequest = sampleKinesisPutRecordRequest;
+exports.sampleKinesisRecord = sampleKinesisRecord;
+exports.sampleKinesisEventWithSampleRecord = sampleKinesisEventWithSampleRecord;
+exports.sampleKinesisEventWithRecord = sampleKinesisEventWithRecord;
+exports.sampleKinesisEventWithRecords = sampleKinesisEventWithRecords;
 
-const Strings = require('core-functions/strings');
-//const isBlank = Strings.isBlank;
-const isNotBlank = Strings.isNotBlank;
-//const trim = Strings.trim;
+exports.sampleMsg = sampleMsg;
+exports.sampleKinesisRecord2 = sampleKinesisRecord2;
+exports.sampleKinesisMessageAndRecord = sampleKinesisMessageAndRecord;
+
+exports.awsKinesisStreamsSampleEvent = awsKinesisStreamsSampleEvent;
+
+  // For DynamoDB stream events
+exports.sampleTableName = sampleTableName;
+exports.sampleDynamoDBEventSourceArn = sampleDynamoDBEventSourceArn;
+exports.sampleDynamoDBEventSourceArnFromPrefixSuffix = sampleDynamoDBEventSourceArnFromPrefixSuffix;
+
+exports.sampleDynamoDBRecord = sampleDynamoDBRecord;
+exports.sampleDynamoDBMessageAndRecord = sampleDynamoDBMessageAndRecord;
+
+exports.sampleDynamoDBEventWithRecords = sampleDynamoDBEventWithRecords;
+
+exports.awsDynamoDBUpdateSampleEvent = awsDynamoDBUpdateSampleEvent;
 
 function sampleNumberString(digits) {
   let number = "";
@@ -67,6 +90,12 @@ function sampleStreamName(streamNamePrefix, streamNameSuffix) {
   return `${prefix}${suffix}`;
 }
 
+function sampleTableName(tableNamePrefix, tableNameSuffix) {
+  const prefix = isNotBlank(tableNamePrefix) ? tableNamePrefix : 'TestDynamoDBTable';
+  const suffix = isNotBlank(tableNameSuffix) ? tableNameSuffix : '';
+  return `${prefix}${suffix}`;
+}
+
 function sampleInvokedFunctionArn(invokedFunctionArnRegion, functionName, functionAlias) {
   const region = isNotBlank(invokedFunctionArnRegion) ? invokedFunctionArnRegion : 'IF_ARN_REGION';
   const funcName = isNotBlank(functionName) ? functionName : sampleFunctionName;
@@ -74,25 +103,46 @@ function sampleInvokedFunctionArn(invokedFunctionArnRegion, functionName, functi
   return `arn:aws:lambda:${region}:${sampleAwsAccountId}:function:${funcName}${aliasSuffix}`
 }
 
-function sampleEventSourceArn(eventSourceArnRegion, streamName) {
+function sampleKinesisEventSourceArn(eventSourceArnRegion, streamName) {
   const region = isNotBlank(eventSourceArnRegion) ? eventSourceArnRegion : 'EF_ARN_REGION';
   const streamName1 = isNotBlank(streamName) ? streamName : sampleStreamName();
   return `arn:aws:kinesis:${region}:${sampleAwsAccountId}:stream/${streamName1}`;
 }
 
-function sampleEventSourceArnFromPrefixSuffix(eventSourceArnRegion, streamNamePrefix, streamNameSuffix) {
+function sampleDynamoDBEventSourceArn(eventSourceArnRegion, tableName, timestamp) {
+  const region = isNotBlank(eventSourceArnRegion) ? eventSourceArnRegion : 'EF_ARN_REGION';
+  const tableName1 = isNotBlank(tableName) ? tableName : sampleTableName();
+  const timestamp0 = isNotBlank(timestamp) ? timestamp : new Date().toISOString();
+  const timestamp1 = timestamp0.endsWith('Z') ? timestamp0.substring(0, timestamp0.length - 1) : timestamp0;
+  //arn:aws:dynamodb:us-east-1:111111111111:table/test/stream/2020-10-10T08:18:22.385
+  return `arn:aws:dynamodb:${region}:${sampleAwsAccountId}:table/${tableName1}/stream/${timestamp1}`;
+}
+
+function sampleKinesisEventSourceArnFromPrefixSuffix(eventSourceArnRegion, streamNamePrefix, streamNameSuffix) {
   const streamName = sampleStreamName(streamNamePrefix, streamNameSuffix);
-  return sampleEventSourceArn(eventSourceArnRegion, streamName);
+  return sampleKinesisEventSourceArn(eventSourceArnRegion, streamName);
+}
+
+function sampleDynamoDBEventSourceArnFromPrefixSuffix(eventSourceArnRegion, tableNamePrefix, tableNameSuffix, timestamp) {
+  const tableName = sampleTableName(tableNamePrefix, tableNameSuffix);
+  return sampleDynamoDBEventSourceArn(eventSourceArnRegion, tableName, timestamp);
 }
 
 function sampleAwsContext(functionName, functionVersion, invokedFunctionArn, maxTimeInMillis) {
   const uuid1 = uuid.v4();
   const startTime = Date.now();
   const maximumTimeInMillis = maxTimeInMillis ? maxTimeInMillis : 1000;
+
+  const dashRegex = /-/g;
+  dashRegex.lastIndex = 0; //NB: MUST RESET lastIndex for global regular expressions (i.e. /.../g )
+  //noinspection JSUnusedLocalSymbols
+  const logStreamName = `2016/10/14/[$LATEST]${uuid1.replace(dashRegex, "")}`;
+  dashRegex.lastIndex = 0; //NB: MUST RESET lastIndex for global regular expressions (i.e. /.../g )
+
   return {
     callbackWaitsForEmptyEventLoop: true,
     logGroupName: `/aws/lambda/${functionName}`,
-    logStreamName: `2016/10/14/[$LATEST]${uuid1.replace(/-/g, "")}`,
+    logStreamName: logStreamName,
     functionName: functionName,
     memoryLimitInMB: 128,
     functionVersion: functionVersion,
@@ -109,18 +159,41 @@ function sampleBase64Data(obj) {
   return new Buffer(JSON.stringify(obj), 'base64');
 }
 
-function sampleKinesisRecord(partitionKey, data, eventSourceArn, eventAwsRegion) {
+function sampleKinesisPutRecordRequest(streamName, partitionKey, data, explicitHashKey, sequenceNumberForOrdering) {
   // Data "SGVsbG8sIHRoaXMgaXMgYSB0ZXN0IDEyMy4=" is a harmless message ('Hello, this is a test 123.')
   // var c = new Buffer('SGVsbG8sIHRoaXMgaXMgYSB0ZXN0IDEyMy4=', 'base64').toString('utf-8');
   // var d = new Buffer('Hello, this is a test 123.', 'utf-8').toString('base64');
-  const shardId = sampleNumberString(56);
+  const kinesisPartitionKey = isNotBlank(partitionKey) ? partitionKey : uuid.v4();
+  const kinesisData = data !== undefined ?
+    typeof data === 'object' ? JSON.stringify(data) : data : "SGVsbG8sIHRoaXMgaXMgYSB0ZXN0IDEyMy4=";
+  const putRecordRequest = {
+    StreamName: streamName,
+    PartitionKey: kinesisPartitionKey,
+    Data: kinesisData
+  };
+  if (explicitHashKey) {
+    putRecordRequest.ExplicitHashKey = explicitHashKey;
+  }
+  if (sequenceNumberForOrdering) {
+    putRecordRequest.SequenceNumberForOrdering = sequenceNumberForOrdering;
+  }
+  return putRecordRequest;
+}
+
+function sampleKinesisRecord(shardId, sequenceNumber, partitionKey, data, eventSourceArn, eventAwsRegion) {
+  // Data "SGVsbG8sIHRoaXMgaXMgYSB0ZXN0IDEyMy4=" is a harmless message ('Hello, this is a test 123.')
+  // var c = new Buffer('SGVsbG8sIHRoaXMgaXMgYSB0ZXN0IDEyMy4=', 'base64').toString('utf-8');
+  // var d = new Buffer('Hello, this is a test 123.', 'utf-8').toString('base64');
+  // const seqNo = sampleNumberString(56);
   const kinesisPartitionKey = isNotBlank(partitionKey) ? partitionKey : uuid.v4();
   const kinesisData = data !== undefined ?
     typeof data === 'object' ? base64.toBase64(data) : data : "SGVsbG8sIHRoaXMgaXMgYSB0ZXN0IDEyMy4=";
-  const sequenceNumber = nextSequenceNumber++; //sampleNumberString(56);
-  const awsRegion = eventAwsRegion ? eventAwsRegion : 'EVENT_AWS_REGION';
+  sequenceNumber = sequenceNumber ? sequenceNumber : nextSequenceNumber++; //sampleNumberString(56);
+  const eventSourceRegion = eventSourceArn ? arns.getArnRegion(eventSourceArn) : '';
+  const awsRegion = eventAwsRegion ? eventAwsRegion : eventSourceRegion ? eventSourceRegion : 'us-west-2';
+  shardId = shardId ? shardId : 'shardId-000000000000';
   const event = {
-    eventID: `shardId-000000000000:${shardId}`,
+    eventID: `${shardId}:${sequenceNumber}`,
     eventVersion: "1.0",
     kinesis: {
       partitionKey: kinesisPartitionKey,
@@ -140,8 +213,8 @@ function sampleKinesisRecord(partitionKey, data, eventSourceArn, eventAwsRegion)
   return event;
 }
 
-function sampleKinesisEventWithSampleRecord(partitionKey, data, eventSourceArn, eventAwsRegion) {
-  return sampleKinesisEventWithRecord(sampleKinesisRecord(partitionKey, data, eventSourceArn, eventAwsRegion))
+function sampleKinesisEventWithSampleRecord(shardId, sequenceNumber, partitionKey, data, eventSourceArn, eventAwsRegion) {
+  return sampleKinesisEventWithRecord(sampleKinesisRecord(shardId, sequenceNumber, partitionKey, data, eventSourceArn, eventAwsRegion))
 }
 
 function sampleKinesisEventWithRecord(kinesisRecord) {
@@ -157,3 +230,238 @@ function sampleKinesisEventWithRecords(kinesisRecords) {
     Records: kinesisRecords
   };
 }
+
+function sampleMsg(id1, id2, k1, k2, n1, n2, n3, n4, n5) {
+  const msg = {};
+  if (id1) msg.id1 = id1;
+  if (id2) msg.id2 = id2;
+
+  if (k1) msg.k1 = k1;
+  if (k2) msg.k2 = k2;
+
+  if (n1) msg.n1 = n1;
+  if (n2) msg.n2 = n2;
+  if (n3) msg.n3 = n3;
+  if (n4) msg.n4 = n4;
+  if (n5) msg.n5 = n5;
+  return msg;
+}
+
+/**
+ * @returns {[Message, Record]}
+ */
+function sampleKinesisMessageAndRecord(shardId, eventSeqNo, eventSourceARN, id1, id2, k1, k2, n1, n2, n3, n4, n5, partitionKey) {
+  const msg = sampleMsg(id1, id2, k1, k2, n1, n2, n3, n4, n5);
+
+  const record = sampleKinesisRecord(shardId, eventSeqNo, partitionKey, msg, eventSourceARN, undefined);
+
+  return [msg, record];
+}
+
+function sampleKinesisRecord2(shardId, eventSeqNo, eventSourceARN, id1, id2, k1, k2, n1, n2, n3, n4, n5, partitionKey) {
+  const msg = sampleMsg(id1, id2, k1, k2, n1, n2, n3, n4, n5);
+
+  return sampleKinesisRecord(shardId, eventSeqNo, partitionKey, msg, eventSourceARN, undefined);
+}
+
+function awsKinesisStreamsSampleEvent(identityArn, eventSourceArn) {
+  return {
+    "Records": [
+      {
+        "eventID": "shardId-000000000000:49545115243490985018280067714973144582180062593244200961",
+        "eventVersion": "1.0",
+        "kinesis": {
+          "partitionKey": "partitionKey-3",
+          "data": "SGVsbG8sIHRoaXMgaXMgYSB0ZXN0IDEyMy4=",
+          "kinesisSchemaVersion": "1.0",
+          "sequenceNumber": "49545115243490985018280067714973144582180062593244200961"
+        },
+        "invokeIdentityArn": identityArn,
+        "eventName": "aws:kinesis:record",
+        "eventSourceARN": eventSourceArn,
+        "eventSource": "aws:kinesis",
+        "awsRegion": "us-east-1"
+      }
+    ]
+  };
+}
+
+function sampleDynamoDBRecord(eventID, eventSeqNo, eventSourceARN, id1, id2, k1, k2, n1, n2, n3, n4, n5) {
+  const record = {
+    "eventID": eventID,
+    "eventVersion": "1.0",
+    "dynamodb": {
+      "StreamViewType": "NEW_AND_OLD_IMAGES",
+      "SequenceNumber": eventSeqNo,
+      "SizeBytes": 26
+    },
+    "awsRegion": "us-west-2",
+    "eventName": "INSERT",
+    "eventSourceARN": eventSourceARN,
+    "eventSource": "aws:dynamodb"
+  };
+  const dynamodb = record.dynamodb;
+  if (k1 || k2) {
+    dynamodb.Keys = {};
+  }
+  if (k1 || k2 || id1 || id2 || n1 || n2 || n3 || n4 || n5) {
+    dynamodb.NewImage = {};
+    dynamodb.OldImage = {};
+  }
+  const keys = dynamodb.Keys;
+  const newImage = dynamodb.NewImage;
+  const oldImage = dynamodb.OldImage;
+  if (k1) {
+    keys.k1 = {"S": `${k1}`};
+    newImage.k1 = {"S": `${k1}`};
+    oldImage.k1 = {"S": `${k1}`};
+  }
+  if (k2) {
+    keys.k2 = {"N": `${k2}`};
+    newImage.k2 = {"N": `${k2}`};
+    oldImage.k2 = {"N": `${k2}`};
+  }
+  if (id1) {
+    newImage.id1 = {"S": `${id1}`};
+    oldImage.id1 = {"S": `${id1}`};
+  }
+  if (id2) {
+    newImage.id2 = {"S": `${id2}`};
+    oldImage.id2 = {"S": `${id2}`};
+  }
+  if (n1) {
+    newImage.n1 = {"N": `${n1}`};
+    oldImage.n1 = {"N": `${n1}`};
+  }
+  if (n2) {
+    newImage.n2 = {"N": `${n2}`};
+    oldImage.n2 = {"N": `${n2}`};
+  }
+  if (n3) {
+    newImage.n3 = {"N": `${n3}`};
+    oldImage.n3 = {"N": `${Number(n3) - 1}`};
+  }
+  if (n4) {
+    newImage.n4 = {"S": `${n4}`};
+    oldImage.n4 = {"S": `${n4}`};
+  }
+  if (n5) {
+    newImage.n5 = {"S": `${n5}`};
+    oldImage.n5 = {"S": `${n5}`};
+  }
+  return record;
+}
+
+/**
+ * @returns {[Message, Record]}
+ */
+function sampleDynamoDBMessageAndRecord(eventID, eventSeqNo, eventSourceARN, id1, id2, k1, k2, n1, n2, n3, n4, n5, skipSimplify) {
+  const record = sampleDynamoDBRecord(eventID, eventSeqNo, eventSourceARN, id1, id2, k1, k2, n1, n2, n3, n4, n5);
+
+  const msg = copy(record, deep);
+
+  if (!skipSimplify) {
+    dynamoDBUtils.simplifyKeysNewImageAndOldImage(msg.dynamodb);
+  }
+  return [msg, record];
+}
+
+function sampleDynamoDBEventWithRecords(dynamoDBRecords) {
+  return {
+    Records: dynamoDBRecords
+  };
+}
+
+function awsDynamoDBUpdateSampleEvent(eventSourceArn) {
+  return {
+    "Records": [
+      {
+        "eventID": "1",
+        "eventVersion": "1.0",
+        "dynamodb": {
+          "Keys": {
+            "Id": {
+              "N": "101"
+            }
+          },
+          "NewImage": {
+            "Message": {
+              "S": "New item!"
+            },
+            "Id": {
+              "N": "101"
+            }
+          },
+          "StreamViewType": "NEW_AND_OLD_IMAGES",
+          "SequenceNumber": "111",
+          "SizeBytes": 26
+        },
+        "awsRegion": "us-west-2",
+        "eventName": "INSERT",
+        "eventSourceARN": eventSourceArn,
+        "eventSource": "aws:dynamodb"
+      },
+      {
+        "eventID": "2",
+        "eventVersion": "1.0",
+        "dynamodb": {
+          "OldImage": {
+            "Message": {
+              "S": "New item!"
+            },
+            "Id": {
+              "N": "101"
+            }
+          },
+          "SequenceNumber": "222",
+          "Keys": {
+            "Id": {
+              "N": "101"
+            }
+          },
+          "SizeBytes": 59,
+          "NewImage": {
+            "Message": {
+              "S": "This item has changed"
+            },
+            "Id": {
+              "N": "101"
+            }
+          },
+          "StreamViewType": "NEW_AND_OLD_IMAGES"
+        },
+        "awsRegion": "us-west-2",
+        "eventName": "MODIFY",
+        "eventSourceARN": eventSourceArn,
+        "eventSource": "aws:dynamodb"
+      },
+      {
+        "eventID": "3",
+        "eventVersion": "1.0",
+        "dynamodb": {
+          "Keys": {
+            "Id": {
+              "N": "101"
+            }
+          },
+          "SizeBytes": 38,
+          "SequenceNumber": "333",
+          "OldImage": {
+            "Message": {
+              "S": "This item has changed"
+            },
+            "Id": {
+              "N": "101"
+            }
+          },
+          "StreamViewType": "NEW_AND_OLD_IMAGES"
+        },
+        "awsRegion": "us-west-2",
+        "eventName": "REMOVE",
+        "eventSourceARN": eventSourceArn,
+        "eventSource": "aws:dynamodb"
+      }
+    ]
+  };
+}
+

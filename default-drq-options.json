@@ -1,7 +1,8 @@
 {
   "loggingOptions": {
-    "logLevel": "trace",
+    "logLevel": "INFO",
     "useLevelPrefixes": true,
+    "envLogLevelName": "LOG_LEVEL",
     "useConsoleTrace": false
   },
 
@@ -17,21 +18,37 @@
   },
 
   "kinesisOptions": {
-    "maxRetries": 1
+    "maxRetries": 0
   },
 
   "dynamoDBDocClientOptions": {
     "maxRetries": 1
   },
 
+  "taskFactoryOptions": {
+    "returnMode": "NORMAL"
+  },
+
   "streamProcessingOptions": {
     "streamType": "kinesis",
-    "taskTrackingName": "drqTaskTracking",
+    "sequencingRequired": false,
+    "sequencingPerKey": false,
+    "batchKeyedOnEventID": false,
+    "kplEncoded": false,
+    "consumerIdSuffix": "",
     "timeoutAtPercentageOfRemainingTime": 0.9,
     "maxNumberOfAttempts": 10,
-    "deadRecordQueueName": "DeadRecordQueue",
-    "deadMessageQueueName": "DeadMessageQueue",
-    "deadRecordTableName": "DeadRecord"
-  }
+    "avoidEsmCache": false,
 
+    "keyPropertyNames": [],
+    "seqNoPropertyNames": [],
+    "idPropertyNames": [],
+
+    "batchStateTableName": "DZ_StreamConsumerBatchState",
+    "deadRecordQueueName": "DZ_DeadRecordQueue",
+    "deadMessageQueueName": "DZ_DeadMessageQueue",
+    "deadRecordTableName": "DZ_DeadRecord",
+
+    "taskTrackingName": "drqTaskTracking"
+  }
 }
