@@ -1,6 +1,6 @@
 ## Changes
 
-### 2.0.0-beta.1
+### 2.0.0-beta.2
 - Switched to use new `kinesis-stream-consumer` instead of old `aws-stream-consumer`
 
 ### 1.0.0

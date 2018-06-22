@@ -1,4 +1,4 @@
-# aws-drq-consumer v2.0.0-beta.1
+# aws-drq-consumer v2.0.0-beta.2
 
 An AWS Lambda that will consume unusable, "dead" records from a Dead Record Queue (DRQ) Kinesis stream and save them
 to DynamoDB. Alternatively, can be used as a module to configure another more-customised version of a DRQ consumer
